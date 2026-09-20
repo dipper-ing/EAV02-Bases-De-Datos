@@ -5,7 +5,7 @@
 > Documentación del modelo de datos correspondiente al Sprint 1 del proyecto
 > DevConnect (red social para desarrolladores). Este repositorio documenta el
 > esquema realmente implementado en el backend del proyecto conjunto, a partir
-> de las migraciones Flyway (`V1` a `V7`) del repositorio principal.
+> de las migraciones Flyway (`V1` a `V8`) del repositorio principal.
 
 Repositorio del proyecto (backend/frontend): https://github.com/TheMax1270/EAV02-Fabrica-Escuela
 
@@ -17,25 +17,18 @@ Repositorio del proyecto (backend/frontend): https://github.com/TheMax1270/EAV02
 
 ## Alcance del Sprint 1 (rol Bases de Datos)
 
-Este sprint documenta las cuatro tablas que soportan las historias de usuario
-que el backend tiene implementadas:
+Este sprint documenta las cinco tablas que soportan las historias de usuario
+comprometidas para este primer sprint y que el backend tiene implementadas:
 
 | Historia de usuario | Tabla(s) asociada(s) |
 |---|---|
 | HU-01 — Registro de usuario | `users.app_users` |
-| HU-03 — Inicio de sesión | `users.app_users`, `authentication.auth_sessions` |
-| HU-05 — Crear/editar perfil técnico | `profiles.developer_profiles` |
-| HU-08 — Gestionar usuarios (listar, suspender, reactivar) | `users.app_users`, `admin.audit_logs` |
-| HU-09 — Auditoría de acciones administrativas | `admin.audit_logs` |
+| HU-02 — Inicio y cierre de sesión | `users.app_users`, `authentication.auth_sessions` |
+| HU-03 — Crear/editar perfil técnico | `profiles.developer_profiles` |
+| HU-05 — Gestionar usuarios (listar, suspender, reactivar) | `users.app_users`, `admin.audit_logs` |
+| HU-05 — Auditoría de acciones administrativas | `admin.audit_logs` |
+| HU-04 — Publicar y editar proyecto | `projects.projects` |
 
-> Nota: HU-02 (verificación de correo), HU-04 (recuperar contraseña) y
-> HU-21 (login con Google) están definidas a nivel de producto pero aún no
-> tienen soporte de datos en el backend (no existen columnas de token de
-> verificación, estado "pendiente de verificación", tabla de recuperación de
-> contraseña, ni `provider`/`google_id`). Quedan fuera del alcance de este
-> entregable porque el objetivo es documentar el modelo *tal como existe hoy*.
-> De HU-08 tampoco se cubren la eliminación física de cuentas ni las
-> políticas de contraseña (fuera del MVP).
 
 ## Organización en schemas
 
@@ -49,6 +42,7 @@ permanece `flyway_schema_history` (tabla de control de Flyway).
 | `auth` | `authentication` | `auth_sessions` |
 | `profile` | `profiles` | `developer_profiles` |
 | `admin` | `admin` | `audit_logs` |
+| `projects` | `projects` | `projects` |
 
 Convenciones adoptadas:
 
@@ -56,7 +50,7 @@ Convenciones adoptadas:
   reservado por Supabase Auth) y `user` (palabra reservada en SQL).
 - Toda referencia a una tabla se escribe calificada (`users.app_users`),
   tanto en SQL como en las entidades JPA (`@Table(schema = ...)`).
-- Los schemas futuros seguirán la misma regla (`projects`, `posts`,
+- Los schemas de módulos futuros seguirán la misma regla (`posts`,
   `interactions`, `messaging`, `notifications`).
 
 La reorganización se hizo con `ALTER TABLE ... SET SCHEMA`, que solo cambia
@@ -70,6 +64,7 @@ erDiagram
     APP_USERS ||--o{ AUTH_SESSIONS : "genera"
     APP_USERS ||--o| DEVELOPER_PROFILES : "tiene"
     APP_USERS ||--o{ ADMIN_AUDIT_LOGS : "ejecuta (admin_id)"
+    APP_USERS ||--o{ PROJECTS : "publica"
 
     APP_USERS {
         uuid id PK
@@ -114,6 +109,18 @@ erDiagram
         jsonb details
         timestamptz created_at
     }
+
+    PROJECTS {
+        uuid id PK
+        uuid user_id FK
+        varchar title
+        varchar description
+        text_array technologies
+        varchar status
+        varchar repository_url
+        timestamptz created_at
+        timestamptz updated_at
+    }
 ```
 
 **Descripción de entidades**
@@ -142,6 +149,12 @@ erDiagram
   comentarios o reportes en sprints posteriores, por eso no lleva FK. La
   columna `details` (`jsonb`) guarda contexto adicional de la acción, por
   ejemplo `{"previousStatus": "ACTIVE", "newStatus": "SUSPENDED"}`.
+- **`projects.projects`**: proyecto técnico publicado por un desarrollador.
+  Relación **1 a N** con `users.app_users`: un usuario puede publicar varios
+  proyectos. El título, la descripción y las tecnologías son obligatorios;
+  `status` registra si está en desarrollo, finalizado o buscando
+  colaboradores, y `repository_url` permite asociar opcionalmente un
+  repositorio GitHub o GitLab. Las imágenes no forman parte de este alcance.
 
 ## 2. Preguntas de negocio clave
 
@@ -199,6 +212,14 @@ Las consultas SQL que resuelven cada pregunta están en
 | | `target_id` | uuid | NOT NULL, sin FK (referencia polimórfica) |
 | | `details` | jsonb | nullable |
 | | `created_at` | timestamptz | NOT NULL |
+| `projects.projects` | `id` | uuid | PK |
+| | `user_id` | uuid | NOT NULL, FK → `users.app_users(id)` |
+| | `title` | varchar(150) | NOT NULL |
+| | `description` | varchar(2000) | NOT NULL |
+| | `technologies` | text[] | NOT NULL |
+| | `status` | varchar(30) | NOT NULL |
+| | `repository_url` | varchar(500) | nullable |
+| | `created_at` / `updated_at` | timestamptz | NOT NULL |
 
 **Decisiones de diseño en `admin.audit_logs`**
 
@@ -238,8 +259,8 @@ lenguaje o tecnología de forma más eficiente que con operadores de array.
 
 El script completo está en [`schema.sql`](./schema.sql). Incluye:
 
-- Creación de los cuatro schemas (`users`, `authentication`, `profiles`,
-  `admin`) y todas las tablas calificadas con su schema.
+- Creación de los cinco schemas (`users`, `authentication`, `profiles`,
+  `admin`, `projects`) y todas las tablas calificadas con su schema.
 - Tipos de datos específicos por columna (no genéricos), incluido `jsonb`
   para datos semiestructurados en `admin.audit_logs.details`.
 - Claves primarias (`uuid`) y foráneas (`REFERENCES`) explícitas.
@@ -251,7 +272,8 @@ El script completo está en [`schema.sql`](./schema.sql). Incluye:
   búsquedas frecuentes (`user_id`, `expires_at`); en `admin.audit_logs`,
   índices por administrador (`admin_id`), por objetivo
   (`target_type, target_id`) y por fecha descendente (`created_at DESC`)
-  para las consultas de bitácora reciente.
+  para las consultas de bitácora reciente; índice por `user_id` en
+  `projects.projects` para consultar los proyectos desde el perfil.
 
 ### Cómo ejecutarlo
 
@@ -275,7 +297,8 @@ principal (`backend/src/main/resources/db/migration`):
 | `V5__recreate_developer_profiles.sql` | Versión vigente de `developer_profiles` (reemplaza a `V4`) |
 | `V6__create_admin_audit_logs.sql` | Creación del schema `admin` y de `admin.audit_logs` con sus índices |
 | `V7__move_tables_to_domain_schemas.sql` | Creación de `users`, `authentication` y `profiles`; traslado de las tablas existentes con `SET SCHEMA` |
+| `V8__create_projects.sql` | Creación del schema `projects` y de `projects.projects` para publicar y editar proyectos |
 
-> `schema.sql` refleja el estado **final** tras aplicar `V1`–`V7`: crea las
+> `schema.sql` refleja el estado **final** tras aplicar `V1`–`V8`: crea las
 > tablas directamente en su schema definitivo en lugar de crearlas en
 > `public` y moverlas después.
