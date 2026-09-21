@@ -302,3 +302,12 @@ principal (`backend/src/main/resources/db/migration`):
 > `schema.sql` refleja el estado **final** tras aplicar `V1`–`V8`: crea las
 > tablas directamente en su schema definitivo en lugar de crearlas en
 > `public` y moverlas después.
+
+
+## INTEGRANTES:
+
+DURANGO DURANGO DANIEL DAVID
+GOMEZ CASTANO JUAN JOSE
+MEDRANO ORTEGA BRYAN
+PATERNINA YEPES KAREN VANESSA
+VARGAS TIRADO MATEO
