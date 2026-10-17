@@ -683,6 +683,22 @@ GROUP BY status, reason, target_type
 ORDER BY CASE WHEN status = 'PENDING' THEN 0 ELSE 1 END,
          reporte_mas_antiguo ASC;
 ```
+## 8. Estimación de volumen
+
+Escenario hipotético de planeación académica, con crecimiento mensual constante. Detalle y fórmula N(t) = N inicial + (G mensual × t) en [`docs/analisis-almacenamiento.md`](./docs/analisis-almacenamiento.md).
+
+| Tabla | Registros iniciales | Crecimiento mensual | Proyección a 12 meses | Supuesto |
+|---|---:|---:|---:|---|
+| users.app_users | 500 | 50 | 1.100 | 50 usuarios nuevos al mes |
+| authentication.auth_sessions | 1.000 | 600 | 8.200 | 2 sesiones por usuario al inicio; cada usuario inicia ≈ 1,2 sesiones al mes; sin depuración |
+| profiles.developer_profiles | 400 | 40 | 880 | El 80 % de los usuarios completa su perfil |
+| admin.audit_logs | 3.000 | 500 | 9.000 | ≈ 17 acciones administrativas por día; se conservan todas |
+| projects.projects | 600 | 80 | 1.560 | 1,2 proyectos por usuario al inicio |
+| posts.posts | 1.500 | 300 | 5.100 | ≈ 10 publicaciones por día |
+| interactions.comments | 8.000 | 1.600 | 27.200 | ≈ 5 comentarios por cada publicación nueva |
+| interactions.reactions | 12.000 | 2.400 | 40.800 | ≈ 6 reacciones por publicación o proyecto |
+| moderation.reports | 300 | 60 | 1.020 | 1 reporte por cada 5 publicaciones |
+| **Total** | **27.300** | **5.630** | **94.860** | |
 
 ## INTEGRANTES:
 
