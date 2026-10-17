@@ -33,13 +33,14 @@ El modelo documenta las funcionalidades implementadas en el backend de DevConnec
 
 ### Sprint 2: publicaciones, interacciones y moderación
 
-| Funcionalidad | Tabla(s) asociada(s) |
-|---|---|
-| Crear publicaciones generales y discusiones técnicas | `posts.posts` |
-| Comentar publicaciones y proyectos | `interactions.comments` |
-| Responder comentarios raíz | `interactions.comments` |
-| Reaccionar a publicaciones y proyectos | `interactions.reactions` |
-| Reportar contenido para moderación | `moderation.reports` |
+| Historia de usuario | Funcionalidad | Tabla(s) asociada(s) |
+|---|---|---|
+| **HU-06 - Crear, gestionar y eliminar publicaciones y discusiones técnicas** | Crear publicaciones generales y discusiones técnicas. | `posts.posts` |
+| **HU-07 - Comentar, responder y reaccionar** | Comentar publicaciones y proyectos, responder comentarios raíz y registrar reacciones. | `interactions.comments`, `interactions.reactions` |
+| **HU-08 - Seguir y dejar de seguir desarrolladores** | Registrar las relaciones de seguimiento entre desarrolladores. | Tabla de seguimiento de desarrolladores *(por confirmar en el esquema implementado)* |
+| **HU-09 - Reportar contenido o perfiles** | Registrar reportes de contenido o perfiles para su revisión. | `moderation.reports` |
+| **HU-10 - Gestionar reportes y moderar contenido** | Consultar, priorizar y gestionar reportes para apoyar la moderación. | `moderation.reports` |
+
 
 ### Alcance del modelo
 
