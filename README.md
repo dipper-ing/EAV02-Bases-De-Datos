@@ -227,7 +227,7 @@ erDiagram
   colaboradores, y `repository_url` permite asociar opcionalmente un
   repositorio GitHub o GitLab. Las imágenes no forman parte de este alcance.
 
-### Entidades incorporadas en el Sprint 2
+### Entidades y sus descripciones
 
 - **`posts.posts`**: almacena las publicaciones creadas por los usuarios. El atributo `type` diferencia las publicaciones generales (`GENERAL`) de las discusiones técnicas (`TECHNICAL_DISCUSSION`). El título puede ser nulo en publicaciones generales, pero es obligatorio y no puede estar en blanco para las discusiones técnicas. `content` siempre es obligatorio. Las categorías se almacenan en un arreglo de texto, con un máximo de 20 elementos. El campo `resolved` indica si una discusión está resuelta; las publicaciones generales deben permanecer con este valor en `false`. El campo `link` es opcional y, cuando se informa, debe comenzar por `http://` o `https://`.
 
@@ -236,6 +236,15 @@ erDiagram
 - **`interactions.reactions`**: registra las reacciones de los usuarios sobre proyectos o publicaciones. Al igual que en los comentarios, cada reacción debe apuntar a un único tipo de contenido. Actualmente, el único tipo permitido es `LIKE`. Los índices únicos parciales impiden que un usuario registre más de una reacción del mismo tipo sobre el mismo proyecto o publicación.
 
 - **`moderation.reports`**: almacena los reportes enviados por usuarios para solicitar la revisión de un contenido. Registra al usuario que reporta, el tipo e identificador del contenido, el motivo, los detalles opcionales, el estado y la fecha de creación. La migración establece un índice único parcial que impide que un mismo usuario tenga más de un reporte `PENDING` para el mismo contenido. `target_id` es una referencia polimórfica: no cuenta con una clave foránea directa hacia proyectos o publicaciones.
+
+### Cambios frente al Sprint 1
+
+| Aspecto | Cambio en el Sprint 2 |
+|---|---|
+| Entidades nuevas | `posts`, `comments`, `reactions` y `reports` (migraciones V9 a V12) |
+| Relaciones nuevas | `app_users` 1:N con `posts`, `comments`, `reactions` y `reports`; `projects` y `posts` 0..1:N con `comments` y `reactions`; `comments` 0..1:N con `comments` (respuestas) |
+| Entidades del Sprint 1 | Sin cambios de estructura |
+| Aún no modelado en `main` | Seguimiento entre usuarios (HU-08) y estado de moderación del contenido (HU-10) |
 
 ## 2. Preguntas de negocio clave
 
@@ -257,6 +266,8 @@ erDiagram
    suspendió?
 10. ¿Qué acciones administrativas se realizaron en los últimos 7 días?
 
+### Preguntas relacionadas al sprint 2
+
 11. (HU-06) ¿Cuántas publicaciones hay por tipo (actualización general o
     discusión técnica) y cuántas están resueltas?
 12. (HU-06) ¿Qué discusiones técnicas siguen abiertas para una categoría o
@@ -273,7 +284,7 @@ erDiagram
 Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 [`queries.sql`](./queries.sql).
 
-## 3. Modelo lógico
+## 3. Modelo lógico y físico: tablas, columnas, tipos y restricciones
 
 | Tabla | Columna | Tipo | Restricciones |
 |---|---|---|---|
@@ -314,6 +325,50 @@ Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 | | `status` | varchar(30) | NOT NULL |
 | | `repository_url` | varchar(500) | nullable |
 | | `created_at` / `updated_at` | timestamptz | NOT NULL |
+| `posts.posts` | `id` | uuid | PK |
+| | `user_id` | uuid | NOT NULL, FK → `users.app_users(id)` |
+| | `title` | varchar(150) | nullable; obligatorio y no vacío si `type` = `TECHNICAL_DISCUSSION` (CHECK) |
+| | `content` | varchar(5000) | NOT NULL, CHECK no vacío |
+| | `created_at` | timestamptz | NOT NULL |
+| | `type` | varchar(30) | NOT NULL, DEFAULT `'GENERAL'`, CHECK IN ('GENERAL','TECHNICAL_DISCUSSION') |
+| | `link` | varchar(500) | nullable, CHECK empieza por `http://` o `https://` |
+| | `categories` | text[] | NOT NULL, DEFAULT `ARRAY[]::TEXT[]`, CHECK máx. 20 elementos sin nulos ni vacíos; al menos 1 en discusiones técnicas |
+| | `resolved` | boolean | NOT NULL, DEFAULT `FALSE`, CHECK `FALSE` si `type` = `GENERAL` |
+| `interactions.comments` | `id` | uuid | PK |
+| | `user_id` | uuid | NOT NULL, FK → `users.app_users(id)` |
+| | `project_id` | uuid | nullable, FK → `projects.projects(id)` |
+| | `post_id` | uuid | nullable, FK → `posts.posts(id)` |
+| | `parent_comment_id` | uuid | nullable; FK compuesta hacia `comments(id, target_type, target_id, is_root)`: el padre debe ser raíz y del mismo contenido; CHECK distinto de `id` |
+| | `content` | varchar(2000) | NOT NULL, CHECK no vacío |
+| | `created_at` | timestamptz | NOT NULL |
+| | `target_type` | text | GENERADA: `'PROJECT'` si hay `project_id`, si no `'POST'` |
+| | `target_id` | uuid | GENERADA: `COALESCE(project_id, post_id)` |
+| | `is_root` | boolean | GENERADA: `parent_comment_id IS NULL` |
+| | `parent_must_be_root` | boolean | GENERADA: siempre `TRUE` (apoya la FK compuesta) |
+| | *(tabla)* | | CHECK: exactamente uno entre `project_id` y `post_id`; UNIQUE (`id`, `target_type`, `target_id`, `is_root`) |
+| `interactions.reactions` | `id` | uuid | PK |
+| | `user_id` | uuid | NOT NULL, FK → `users.app_users(id)` |
+| | `project_id` | uuid | nullable, FK → `projects.projects(id)` |
+| | `post_id` | uuid | nullable, FK → `posts.posts(id)` |
+| | `type` | varchar(10) | NOT NULL, DEFAULT `'LIKE'`, CHECK = 'LIKE' |
+| | `created_at` | timestamptz | NOT NULL |
+| | *(tabla)* | | CHECK: exactamente uno entre `project_id` y `post_id`; único parcial por (contenido, usuario, tipo) |
+| `moderation.reports` | `id` | uuid | PK |
+| | `reporter_id` | uuid | NOT NULL, FK → `users.app_users(id)` |
+| | `target_type` | varchar(20) | NOT NULL (`POST`, `COMMENT`, `PROFILE`; dominio controlado por la aplicación, sin CHECK) |
+| | `target_id` | uuid | NOT NULL, sin FK (referencia polimórfica) |
+| | `reason` | varchar(30) | NOT NULL (`SPAM`, `HARASSMENT`, `INAPPROPRIATE_CONTENT`, `MISINFORMATION`, `OTHER`; controlado por la aplicación) |
+| | `details` | varchar(500) | nullable |
+| | `status` | varchar(20) | NOT NULL (`PENDING`, `RESOLVED`, `DISMISSED`; controlado por la aplicación) |
+| | `created_at` | timestamptz | NOT NULL |
+| | *(tabla)* | | único parcial (`reporter_id`, `target_type`, `target_id`) cuando `status` = `PENDING` |
+
+**Índices del Sprint 2**
+
+- `posts.posts`: `ix_posts_user_id` y `ix_posts_created_at_id` (`created_at DESC`, `id DESC`).
+- `interactions.comments`: `ix_comments_user_id`; `ix_comments_project_id` e `ix_comments_post_id` (parciales); `ix_comments_project_roots` e `ix_comments_post_roots` (comentarios raíz por contenido y fecha); `ix_comments_parent_created` (respuestas por comentario padre).
+- `interactions.reactions`: `ux_reactions_project_user_type` y `ux_reactions_post_user_type` (únicos parciales); `ix_reactions_user_id`.
+- `moderation.reports`: `ux_reports_pending_per_reporter` (único parcial, solo `PENDING`) e `ix_reports_target`.
 
 **Decisiones de diseño en `admin.audit_logs`**
 
@@ -346,13 +401,24 @@ Estos atributos multivaluados no cumplen estrictamente el principio de atomicida
 
 ### Segunda forma normal (2FN)
 
-Todas las tablas utilizan claves primarias simples (`id`). Por tanto, no existen dependencias parciales respecto de claves primarias compuestas. Esto no sustituye la revisión de las dependencias funcionales de cada entidad, pero permite identificar que las claves actuales no generan ese tipo de dependencia parcial.
+Las nueve tablas usan clave primaria simple (`id`), por lo que no existen dependencias parciales: todo atributo depende de la clave completa.
 
 ### Tercera forma normal (3FN)
 
-La separación de usuarios, perfiles, proyectos, publicaciones, comentarios, reacciones, sesiones, auditoría y reportes reduce la duplicación de datos entre entidades. Las relaciones explícitas se implementan mediante claves foráneas cuando corresponde.
+En todas las tablas se cumple `id → resto de atributos`. Dependencias adicionales y observaciones:
 
-El cumplimiento estricto de 3FN debe verificarse a partir de las dependencias funcionales de cada tabla. La presencia de claves primarias simples, por sí sola, no demuestra que todo el modelo esté en 3FN.
+| Tabla | Observación |
+|---|---|
+| `app_users` | `username` y `email` son claves candidatas (únicos sin distinguir mayúsculas). Sin dependencias transitivas |
+| `auth_sessions` | Sin dependencias transitivas; `refresh_token_hash` es único |
+| `developer_profiles` | `user_id` es clave candidata (UNIQUE). Sin transitivas, salvo los arreglos (ver 1FN) |
+| `audit_logs` | Sin transitivas; `target_type`/`target_id` es una referencia polimórfica |
+| `projects` y `posts` | Sin transitivas, salvo los arreglos `technologies` y `categories` (ver 1FN) |
+| `comments` | `target_type`, `target_id` e `is_root` se derivan de `project_id`, `post_id` y `parent_comment_id`: es una dependencia transitiva. Son columnas **generadas y almacenadas**, las mantiene el motor (no hay anomalías de actualización) y existen para hacer cumplir la FK compuesta |
+| `reactions` | Sin dependencias transitivas |
+| `reports` | Sin transitivas; `target_type`/`target_id` es polimórfico |
+
+**Conclusión:** el modelo está en 3FN con dos excepciones documentadas: los arreglos `TEXT[]` (1FN estricta) y las columnas generadas de `comments` (redundancia controlada por el motor).
 
 ### Decisiones de diseño y mejoras propuestas
 
@@ -463,6 +529,26 @@ Los tres roles se crearon con el atributo `NOLOGIN`, por lo que funcionan como r
 ### 6.3. Asignación de permisos
 
 El script `security.sql` utiliza instrucciones `GRANT` para asignar permisos y `REVOKE` para retirar los privilegios de tablas concedidos al rol `PUBLIC` en los ocho esquemas de negocio.
+**Matriz de privilegios (rol × tabla)**
+
+| Tabla | `db_readonly` | `app_runtime` | `app_moderator` |
+|---|---|---|---|
+| `users.app_users` | SELECT (sin `password_hash`) | SELECT, INSERT, UPDATE | — |
+| `authentication.auth_sessions` | — | SELECT, INSERT, UPDATE, DELETE | — |
+| `profiles.developer_profiles` | SELECT | SELECT, INSERT, UPDATE, DELETE | — |
+| `projects.projects` | SELECT | SELECT, INSERT, UPDATE, DELETE | — |
+| `posts.posts` | SELECT | SELECT, INSERT, UPDATE | SELECT |
+| `interactions.comments` | SELECT | SELECT, INSERT, UPDATE | SELECT |
+| `interactions.reactions` | SELECT | SELECT, INSERT, UPDATE, DELETE | — |
+| `moderation.reports` | SELECT | SELECT, INSERT | SELECT; UPDATE solo en `status` |
+| `admin.audit_logs` | SELECT | SELECT, INSERT | SELECT, INSERT |
+
+**Rol de la aplicación:** la aplicación debe conectarse con una cuenta con login que sea miembro de `app_runtime`. Las migraciones de Flyway necesitan un rol con permisos de administración sobre el esquema, distinto de `app_runtime`.
+
+<details>
+<summary>Script completo de roles y permisos (<code>security.sql</code>)</summary>
+
+</details>
 
 Los permisos se asignan por esquema y tabla. El rol `db_readonly` recibe `SELECT` en todas las tablas. El rol `app_runtime` recibe permisos operativos sobre las tablas funcionales, con restricciones específicas en `moderation.reports` y `admin.audit_logs`. El rol `app_moderator` recibe permisos de consulta y actualización sobre los reportes, sin permiso de eliminación.
 

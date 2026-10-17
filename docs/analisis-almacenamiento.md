@@ -145,14 +145,16 @@ Q' = τ_{created_at ↓}( π_{created_at, action, username, details}( π_{create
 
 ### 9.5. Comparación de tuplas
 
-| Momento | Tuplas intermedias |
+| Momento | Tuplas intermedias estimadas |
 |---|---:|
-| Original: reunión completa audit_logs ⋈ app_users | ≤ 9.000 (admin_id apunta a la llave id: cada acción une con un usuario) |
-| Original: después de σ | 30 |
-| Optimizada: σ sobre audit_logs | 30 |
-| Optimizada: reunión con app_users | ≤ 30 |
+| Original: reunión de `audit_logs` con `app_users` | Hasta 9.000 |
+| Original: después de aplicar los filtros | 30 |
+| Optimizada: selección en `audit_logs` antes de la reunión | 30 |
+| Optimizada: reunión del resultado filtrado con `app_users` | Hasta 30 |
 
-El conjunto intermedio baja de 9.000 a 30 tuplas (99,7 %), y además se descartan columnas antes de unir. Los datos son del escenario de la sección 3, no mediciones.
+Para esta comparación se supone que cada registro de auditoría encuentra como máximo un usuario administrador mediante `admin_id`, porque este atributo referencia la llave primaria `users.app_users.id`. También se supone que los filtros seleccionan 30 de las 9.000 acciones de auditoría proyectadas, equivalentes a una selectividad aproximada del 0,33 %. Estos valores son supuestos académicos, no resultados medidos.
+
+En este escenario, el conjunto intermedio previo a la selección pasa de hasta 9.000 a 30 tuplas, una reducción aproximada del 99,67 %. La transformación también permite descartar columnas que no se necesitan antes de la reunión.
 
 ### 9.6. Conclusión
 
@@ -172,6 +174,8 @@ FROM admin.audit_logs l
 JOIN users.app_users a ON a.id = l.admin_id
 WHERE l.target_type = 'USER' AND l.target_id = c
 ORDER BY l.created_at DESC;
+
+En esta expresión, `c` representa el identificador del usuario objetivo, obtenido previamente mediante la búsqueda por `username` de la consulta original de `queries.sql`. Se trata como una constante para simplificar el análisis del costo. Por tanto, los cálculos presentados se concentran en la selección de los registros de auditoría y en la reunión posterior con la tabla de usuarios administradores.
 ```
 
 ### 10.2. Estadísticas y de dónde salen
@@ -190,8 +194,10 @@ ORDER BY l.created_at DESC;
 
 ### 10.3. Altura de los índices
 
-- `ix_audit_logs_target` (secundario): L_I ≈ 40, FR_I = ⌊8.192 / 40⌋ = 204, d = 102, HI ≤ log₁₀₂(300) = 1,23, entonces **HI = 2**.
-- Llave primaria de `app_users`: L_I = 8 + 16 + 4 = 28, FR_I = 292, d = 146, HI ≤ log₁₄₆(1.100) = 1,41, entonces **HI = 2**.
+- `ix_audit_logs_target`: se supone una entrada de índice de 40 bytes, por lo que \(FR_I=\lfloor8192/40\rfloor=204\). Para la estimación se adopta un orden mínimo \(d=\lfloor204/2\rfloor=102\). Con \(V=300\) valores distintos, la altura estimada es \(HI=\lceil\log_{102}(300)\rceil=2\) niveles.
+- Índice de llave primaria de `users.app_users`: se supone una entrada de 28 bytes, por lo que \(FR_I=\lfloor8192/28\rfloor=292\). Se adopta \(d=\lfloor292/2\rfloor=146\). Para 1.100 usuarios, la altura estimada es \(HI=\lceil\log_{146}(1100)\rceil=2\) niveles.
+
+Estos resultados corresponden a un modelo teórico simplificado. La altura y el número de páginas reales dependen de la estructura, la ocupación y la distribución de las claves en los índices de PostgreSQL.
 
 ### 10.4. Selección sobre audit_logs
 
@@ -209,6 +215,8 @@ ORDER BY l.created_at DESC;
 | 3. Selección lineal + indexed nested-loop | 220 + 30·(2 + 1) | 310 |
 | 4. Reunión completa primero (Grace hash join, M = 10 > √25) | 3·(25 + 220) | 735 |
 | 5. Reunión completa primero (nested-loop en bloques, externa = app_users) | 25 + 220·⌈25/(10−2)⌉ = 25 + 220·4 | 905 |
+
+Los costos se calculan bajo los supuestos de la sección 10.2 y representan lecturas estimadas de páginas, no tiempos de ejecución medidos. En el plan 1 se supone que las 30 tuplas obtenidas por la selección caben en una página y que `users.app_users` ocupa 25 páginas. En el plan 2 se estima una búsqueda por índice y acceso a la página del usuario por cada tupla seleccionada. Los planes 4 y 5 consideran la reunión de las tablas completas antes de aplicar el filtro. El optimizador de PostgreSQL podría elegir otro plan según las estadísticas, los índices disponibles y los datos reales.
 
 El ordenamiento final se hace en memoria sobre 30 tuplas y no agrega lecturas.
 
