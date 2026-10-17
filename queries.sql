@@ -9,7 +9,7 @@ FROM users.app_users
 WHERE enabled = false;
 
 -- 3. Sesiones activas (no revocadas y no expiradas) de un usuario
---    Reemplazar :user_id por el uuid real.
+--    Ejecutar definiendo la variable user_id en psql.
 SELECT s.id, s.created_at, s.expires_at
 FROM authentication.auth_sessions s
 WHERE s.user_id = :'user_id'
@@ -76,3 +76,62 @@ FROM admin.audit_logs l
 JOIN users.app_users a ON a.id = l.admin_id
 WHERE l.created_at >= now() - interval '7 days'
 ORDER BY l.created_at DESC;
+
+-- HU-07: consultar comentarios y respuestas de cada publicación
+SELECT
+    p.id AS post_id,
+    p.title,
+    COUNT(c.id) AS total_comentarios,
+    COUNT(c.id) FILTER (WHERE c.is_root = TRUE) AS comentarios_raiz,
+    COUNT(c.id) FILTER (WHERE c.is_root = FALSE) AS respuestas
+FROM posts.posts AS p
+LEFT JOIN interactions.comments AS c
+    ON c.post_id = p.id
+GROUP BY p.id, p.title
+ORDER BY total_comentarios DESC;
+
+-- HU-07: contar las reacciones de cada publicación
+SELECT
+    p.id AS post_id,
+    p.title,
+    COUNT(r.id) AS total_reacciones
+FROM posts.posts AS p
+LEFT JOIN interactions.reactions AS r
+    ON r.post_id = p.id
+GROUP BY p.id, p.title
+ORDER BY total_reacciones DESC;
+
+-- HU-09: identificar los tipos de contenido o perfiles más reportados
+SELECT
+    target_type,
+    COUNT(*) AS total_reportes_pendientes
+FROM moderation.reports
+WHERE status = 'PENDING'
+GROUP BY target_type
+ORDER BY total_reportes_pendientes DESC;
+
+-- HU-09: revisar los reportes enviados por un usuario específico
+SELECT
+    id AS report_id,
+    target_type,
+    target_id,
+    reason,
+    details,
+    status,
+    created_at
+FROM moderation.reports
+WHERE reporter_id = :'user_id'
+ORDER BY created_at DESC;
+
+-- HU-10: priorizar la revisión de reportes pendientes
+SELECT
+    status,
+    reason,
+    target_type,
+    COUNT(*) AS total_reportes,
+    MIN(created_at) AS reporte_mas_antiguo
+FROM moderation.reports
+GROUP BY status, reason, target_type
+ORDER BY
+    CASE WHEN status = 'PENDING' THEN 0 ELSE 1 END,
+    reporte_mas_antiguo ASC;
