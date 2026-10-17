@@ -71,55 +71,49 @@ Para calcular el almacenamiento físico en bytes se necesitarían tamaños prome
 
 Bajo el escenario propuesto, el modelo pasaría de 27.300 a 94.860 registros en doce meses. Esta proyección permite identificar las tablas con mayor crecimiento y sirve como base para estudiar el almacenamiento, los índices y el costo de las consultas. Las cifras deberán ajustarse cuando se disponga de métricas reales de uso.
 
-## 8. Calculo de almacenamiento e indices
+## 8. Cálculo de almacenamiento e índices
 
 ### 8.1. Tabla seleccionada
 
-Se selecciona `interactions.comments`, debido a sus relaciones con usuarios, proyectos, publicaciones y comentarios padre. La proyeccion anual utilizada es de 27.200 filas, segun los supuestos del apartado de volumen.
+Se selecciona `interactions.comments`: es una de las tablas de mayor volumen (27.200 filas en la proyección a 12 meses), tiene contenido de longitud variable y concentra los índices parciales del modelo. Supuestos: página P = 8.192 bytes (valor por defecto de PostgreSQL) y TR = 27.200.
 
-### 8.2. Tamano estimado de fila
+### 8.2. Longitud típica de fila (L)
 
-Para el ejercicio se adopta un tamano promedio estimado de fila (L) de 320 bytes. Este valor contempla los campos UUID, el contenido promedio supuesto, la fecha, las columnas generadas y una sobrecarga aproximada de la tupla. No es una medicion real de PostgreSQL.
+L = 4 · (#campos variables) + Σ tamaño(campos fijos) + tamaño(mapa de bits) + Σ tamaño estimado(campos variables)
+
+- Campos fijos: 6 `uuid` (id, user_id, project_id, post_id, parent_comment_id, target_id) = 96; `created_at` = 8; 2 `boolean` (is_root, parent_must_be_root) = 2. Σ fijos = 106 bytes.
+- Campos variables (2): `content`, supuesto de 200 bytes en promedio, y `target_type`, 4 bytes ('POST' en la mayoría). Σ variables = 204 bytes.
+- Mapa de bits: 11 campos, ⌈11 / 8⌉ = 2 bytes.
+
+L = 4 · 2 + 106 + 2 + 204 = **320 bytes**
 
 ### 8.3. Factor de bloqueo
 
-Se supone un tamano de pagina de 8.192 bytes, un encabezado de pagina de 24 bytes y un puntero de linea de 4 bytes por registro.
+FR = ⌊(P − 2) / (4 + L)⌋ = ⌊(8.192 − 2) / (4 + 320)⌋ = ⌊8.190 / 324⌋ = ⌊25,28⌋ = **25 registros por página**
 
-FR = piso((8192 - 24) / (320 + 4)) = 25 registros por bloque.
+### 8.4. Páginas de la tabla
 
-### 8.4. Bloques requeridos
+BR = ⌈TR / FR⌉ = ⌈27.200 / 25⌉ = **1.088 páginas**
 
-B = techo(N / FR)
+Espacio: 1.088 × 8.192 = 8.912.896 bytes ≈ 8,5 MiB (sin índices ni espacio libre).
 
-B = techo(27.200 / 25) = 1.088 bloques.
+### 8.5. Organización de archivo e índice elegidos
 
-Espacio estimado de paginas de datos:
+- **Archivo:** heap (registros sin orden físico), que es el que usa PostgreSQL. Los comentarios se insertan al final y se consultan por publicación o proyecto, no por rango de llave primaria.
+- **Índice:** B+-tree secundario `ix_comments_post_roots` sobre `(post_id, created_at, id)`, parcial (`post_id IS NOT NULL AND parent_comment_id IS NULL`).
+- **Justificación:** la consulta frecuente (HU-07) lista los comentarios raíz de una publicación en orden cronológico. La igualdad sobre `post_id` localiza el grupo y `(created_at, id)` entrega el orden sin ordenar aparte. Al ser parcial, excluye respuestas y comentarios de proyectos (que tienen sus propios índices), ocupa menos espacio y cuesta menos mantenerlo.
 
-1.088 x 8.192 = 8.912.896 bytes, aproximadamente 8,5 MiB.
+### 8.6. Tamaño del índice B+-tree
 
-Esta estimacion no incluye indices, fragmentacion, espacio libre ni otros costos internos.
+- Entrada: L_I = 8 (cabecera) + 40 (clave: 16 + 8 + 16) + 4 (puntero) = 52 bytes.
+- Entradas por nodo: FR_I = ⌊B / L_I⌋ = ⌊8.192 / 52⌋ = 157.
+- Orden: 2d − 1 = 157, entonces d = 79 (cumple d ≥ 3).
+- V(a,R) = 27.200 (cota superior: la clave incluye `id`, así que cada entrada es distinta).
+- Altura: H ≤ log₇₉(27.200) = 2,34, entonces **H = 3**.
+- Nodos por nivel (≈ V / dᵏ): hojas = ⌈27.200 / 79⌉ = 345; nivel 2 = ⌈27.200 / 79²⌉ = 5; raíz = 1.
+- Espacio = (345 + 5 + 1) × 8.192 = 2.875.392 bytes ≈ **2,74 MiB**.
 
-### 8.5. Estrategia de indices
-
-El esquema define indices para buscar comentarios por usuario, proyecto, publicacion y comentario padre. Tambien define indices parciales para comentarios raiz de proyectos y publicaciones, y para respuestas.
-
-Se analiza `ix_comments_post_roots`, definido sobre `(post_id, created_at, id)` para filas cuyo `post_id` no es nulo y cuyo `parent_comment_id` es nulo.
-
-### 8.6. Estimacion ilustrativa del indice B-tree
-
-Para ilustrar el calculo, se supone una entrada de indice de 52 bytes, una pagina de 8.192 bytes y una ocupacion util del 90 %. Se reservan aproximadamente 40 bytes por pagina para encabezado y espacio especial.
-
-Entradas aproximadas por pagina:
-
-E = piso((8192 - 40) / 52) = 156.
-
-Paginas hoja estimadas, suponiendo que las 27.200 filas califican para el indice:
-
-B_hojas = techo(27.200 / (156 x 0,90)) = 194.
-
-Bajo estos supuestos, se estima una altura aproximada de tres niveles: raiz, nivel interno y hojas. El espacio de las paginas hoja seria del orden de 194 x 8.192 bytes, es decir, aproximadamente 1,52 MiB, sin incluir paginas internas ni otros costos.
-
-Este resultado es ilustrativo, no una medicion del indice real. Como el indice es parcial, el numero real de entradas depende de cuantos comentarios sean raiz de publicaciones. El tamano de las entradas, la ocupacion, la altura y el espacio exactos deben verificarse sobre datos reales.
+Contraste: con una ocupación útil del 90 % y 156 entradas por página resultan 194 páginas hoja (≈ 1,52 MiB). La fórmula de referencia usa el orden mínimo d y da una cota mayor. Como el índice es parcial, el tamaño real será menor.
 
 ### 8.7. Consideraciones
 
@@ -133,48 +127,91 @@ Se selecciona la consulta 7 de `queries.sql`, que obtiene el historial de accion
 
 ### 9.2. Expresión algebraica original
 
-Se utilizan los siguientes símbolos:
+Con p1: `target_type = 'USER'` y p2: `target_id = c`:
 
-- σ: selección de filas.
-- ⋈: unión entre relaciones.
-- π: proyección de columnas.
-- τ: ordenamiento.
+Q = τ_{created_at ↓}( π_{created_at, action, username, details}( σ_{p1 ∧ p2}( audit_logs ⋈_{admin_id = id} app_users ) ) )
 
-La expresión original se representa así:
+La selección queda **después** de la reunión, como en el SQL.
 
-Q = τ_fecha_descendente (π_campos (σ_condiciones(audit_logs) ⋈ app_users))
+### 9.3. Transformaciones
 
-Donde las condiciones son `target_type = 'USER'` y `target_id = :user_id`, y la unión se realiza mediante `admin_id = id`.
-
-### 9.3. Aplicación de la ley de selección
-
-La ley de equivalencia permite aplicar una selección antes de una unión cuando las condiciones utilizan únicamente atributos de una de las relaciones:
-
-σ_C(R ⋈ S) ≡ σ_C(R) ⋈ S
-
-En este caso, ambas condiciones de filtrado pertenecen a `admin.audit_logs`. Por tanto, se pueden filtrar primero las acciones administrativas y después unir los registros resultantes con `users.app_users`.
+1. **Ley 2** (selección conjunta): σ_{p1 ∧ p2}(E) ≡ σ_{p1}(σ_{p2}(E)). Se separan las dos condiciones.
+2. **Leyes 4 y 5** (selección sobre una reunión): p1 y p2 usan solo atributos de `audit_logs`, así que σ_p(E1 ⋈ E2) ≡ σ_p(E1) ⋈ E2. Ambas selecciones bajan a `audit_logs`, antes de la reunión.
+3. **Leyes 9 y 8** (proyecciones): se proyecta temprano lo necesario. De `audit_logs`: created_at, action, details y admin_id. De `app_users`: id y username (se conservan los atributos de la reunión). La proyección final elimina admin_id e id (cascada, Ley 8).
 
 ### 9.4. Expresión algebraica optimizada
 
-Q optimizada = τ_fecha_descendente (π_campos (σ_condiciones(audit_logs) ⋈ app_users))
-
-La expresión optimizada adelanta conceptualmente la selección sobre `audit_logs`. Se mantienen la unión con los usuarios, las columnas proyectadas y el ordenamiento final, por lo que el resultado lógico es equivalente al de la consulta original.
+Q' = τ_{created_at ↓}( π_{created_at, action, username, details}( π_{created_at, action, details, admin_id}( σ_{p1}( σ_{p2}( audit_logs ) ) ) ⋈_{admin_id = id} π_{id, username}( app_users ) ) )
 
 ### 9.5. Comparación de tuplas
 
-Para ilustrar el efecto de la transformación, se plantea el siguiente escenario hipotético, que no corresponde a mediciones reales:
+| Momento | Tuplas intermedias |
+|---|---:|
+| Original: reunión completa audit_logs ⋈ app_users | ≤ 9.000 (admin_id apunta a la llave id: cada acción une con un usuario) |
+| Original: después de σ | 30 |
+| Optimizada: σ sobre audit_logs | 30 |
+| Optimizada: reunión con app_users | ≤ 30 |
 
-- Registros iniciales en `admin.audit_logs`: 3.000.
-- Registros que cumplen ambos filtros: 30.
-- Registros en `users.app_users`: 500.
-- Registros candidatos a la unión después del filtrado: 30, en lugar de considerar las 3.000 acciones iniciales.
-
-En este escenario, la selección reduce las filas candidatas provenientes de auditoría de 3.000 a 30, una reducción del 99 % antes de la unión.
-
-Esta comparación ilustra la reducción del conjunto intermedio. No significa que la consulta original necesariamente procese las 3.000 filas: PostgreSQL puede aplicar la selección automáticamente y utilizar el índice compuesto `ix_audit_logs_target`.
+El conjunto intermedio baja de 9.000 a 30 tuplas (99,7 %), y además se descartan columnas antes de unir. Los datos son del escenario de la sección 3, no mediciones.
 
 ### 9.6. Conclusión
 
 La optimización algebraica consiste en adelantar las selecciones para reducir el volumen de datos que participa en operaciones posteriores. En la consulta estudiada, el índice compuesto sobre `(target_type, target_id)` favorece la búsqueda de las acciones pertinentes.
 
 El plan de ejecución local confirmó el uso de dicho índice, pero devolvió cero filas porque la base de prueba no contiene datos representativos. Por ello, la reducción del 99 % es únicamente un ejemplo académico y no un resultado medido. La equivalencia lógica de la transformación se mantiene, aunque una mejora real de tiempo debe verificarse con datos de prueba representativos.
+
+## 10. Análisis de costo de una consulta
+
+### 10.1. Consulta seleccionada
+
+La consulta 7 de `queries.sql` (historial de acciones administrativas sobre un usuario), que incluye una reunión. El identificador del usuario se trata como una constante c.
+
+```sql
+SELECT l.created_at, l.action, a.username, l.details
+FROM admin.audit_logs l
+JOIN users.app_users a ON a.id = l.admin_id
+WHERE l.target_type = 'USER' AND l.target_id = c
+ORDER BY l.created_at DESC;
+```
+
+### 10.2. Estadísticas y de dónde salen
+
+| Dato | Valor | Origen |
+|---|---|---|
+| TR de `audit_logs` | 9.000 | Proyección a 12 meses (sección 3) |
+| TR de `app_users` | 1.100 | Proyección a 12 meses (sección 3) |
+| P (página) | 8.192 bytes | Valor por defecto de PostgreSQL |
+| M (memoria) | 10 páginas | Supuesto |
+| V(target_type, target_id) | 300 | Supuesto: 30 acciones por objetivo |
+| L, FR, BR | ver abajo | Calculados con las fórmulas de referencia |
+
+- `audit_logs`: fijos = 3 uuid (48) + 1 timestamptz (8) = 56; variables (3): action 20 + target_type 6 + details 100 = 126; mapa de bits = ⌈7/8⌉ = 1. L = 4·3 + 56 + 1 + 126 = **195**. FR = ⌊8.190 / 199⌋ = **41**. BR = ⌈9.000 / 41⌉ = **220**.
+- `app_users`: fijos = 1 uuid (16) + 1 boolean (1) + 1 timestamptz (8) = 25; variables (5): 25 + 12 + 28 + 60 + 9 = 134; mapa de bits = 1. L = 4·5 + 25 + 1 + 134 = **180**. FR = ⌊8.190 / 184⌋ = **44**. BR = ⌈1.100 / 44⌉ = **25**.
+
+### 10.3. Altura de los índices
+
+- `ix_audit_logs_target` (secundario): L_I ≈ 40, FR_I = ⌊8.192 / 40⌋ = 204, d = 102, HI ≤ log₁₀₂(300) = 1,23, entonces **HI = 2**.
+- Llave primaria de `app_users`: L_I = 8 + 16 + 4 = 28, FR_I = 292, d = 146, HI ≤ log₁₄₆(1.100) = 1,41, entonces **HI = 2**.
+
+### 10.4. Selección sobre audit_logs
+
+- S(a,R) = TR / V(a,R) = 9.000 / 300 = 30 tuplas.
+- Con índice secundario: HI + S = 2 + 30 = **32 páginas**.
+- Con lectura lineal: BR = **220 páginas**.
+- El resultado (30 × 195 = 5.850 bytes) cabe en 1 página.
+
+### 10.5. Reunión con app_users: planes comparados
+
+| Plan | Cálculo | Costo (páginas) |
+|---|---|---:|
+| 1. Selección con índice + nested-loop en bloques (externa = resultado de 1 página) | 32 + [1 + 25·⌈1/(10−2)⌉] = 32 + 26 | **58** |
+| 2. Selección con índice + indexed nested-loop | 32 + 30·(2 + 1) | 122 |
+| 3. Selección lineal + indexed nested-loop | 220 + 30·(2 + 1) | 310 |
+| 4. Reunión completa primero (Grace hash join, M = 10 > √25) | 3·(25 + 220) | 735 |
+| 5. Reunión completa primero (nested-loop en bloques, externa = app_users) | 25 + 220·⌈25/(10−2)⌉ = 25 + 220·4 | 905 |
+
+El ordenamiento final se hace en memoria sobre 30 tuplas y no agrega lecturas.
+
+### 10.6. Conclusión
+
+El plan 1 es el más barato (58 páginas), unas 15,6 veces menos que el plan 5 (905). Adelantar la selección, apoyada en el índice, reduce el costo de 905 a 58 páginas. El indexed nested-loop (plan 2) pierde frente al plan 1 porque `app_users` es pequeña (25 páginas): leerla una vez sale más barato que 30 búsquedas por índice. Son estimaciones sobre supuestos, no mediciones.
