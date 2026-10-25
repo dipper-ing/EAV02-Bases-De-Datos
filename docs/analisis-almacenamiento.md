@@ -65,7 +65,7 @@ Los registros de auditoría requieren una estrategia de conservación acorde con
 
 Esta estimación es preliminar y depende de los supuestos adoptados. El crecimiento real puede variar según el número de usuarios activos, la frecuencia de publicación, las interacciones por usuario y las políticas de retención.
 
-Para calcular el almacenamiento físico en bytes se necesitarían tamaños promedio de fila, índices, páginas de PostgreSQL y factores de ocupación. Estos cálculos se desarrollarán por separado en el análisis de almacenamiento.
+Para calcular el almacenamiento físico en bytes se necesitarían tamaños promedio de fila, índices, páginas de PostgreSQL y factores de ocupación. Estos cálculos se desarrollan en la sección 8 (almacenamiento e índices) y en la sección 10 (costo de consultas).
 
 ## 7. Conclusión
 
@@ -125,6 +125,16 @@ Los indices aceleran consultas frecuentes, pero consumen espacio y agregan traba
 
 Se selecciona la consulta 7 de `queries.sql`, que obtiene el historial de acciones administrativas relacionadas con un usuario. La consulta combina `admin.audit_logs` con `users.app_users`, filtra las acciones por tipo e identificador del objetivo y ordena los resultados por fecha descendente.
 
+SQL original (el identificador del usuario se trata como una constante `c`):
+
+```sql
+SELECT l.created_at, l.action, a.username, l.details
+FROM admin.audit_logs l
+JOIN users.app_users a ON a.id = l.admin_id
+WHERE l.target_type = 'USER' AND l.target_id = c
+ORDER BY l.created_at DESC;
+```
+
 ### 9.2. Expresión algebraica original
 
 Con p1: `target_type = 'USER'` y p2: `target_id = c`:
@@ -174,9 +184,9 @@ FROM admin.audit_logs l
 JOIN users.app_users a ON a.id = l.admin_id
 WHERE l.target_type = 'USER' AND l.target_id = c
 ORDER BY l.created_at DESC;
-
-En esta expresión, `c` representa el identificador del usuario objetivo, obtenido previamente mediante la búsqueda por `username` de la consulta original de `queries.sql`. Se trata como una constante para simplificar el análisis del costo. Por tanto, los cálculos presentados se concentran en la selección de los registros de auditoría y en la reunión posterior con la tabla de usuarios administradores.
 ```
+
+En esta expresión, `c` representa el identificador del usuario objetivo, obtenido mediante la subconsulta por `username` de la consulta 7 de `queries.sql`. Se trata como una constante para simplificar el análisis del costo. Por tanto, los cálculos presentados se concentran en la selección de los registros de auditoría y en la reunión posterior con la tabla de usuarios administradores.
 
 ### 10.2. Estadísticas y de dónde salen
 
@@ -194,8 +204,8 @@ En esta expresión, `c` representa el identificador del usuario objetivo, obteni
 
 ### 10.3. Altura de los índices
 
-- `ix_audit_logs_target`: se supone una entrada de índice de 40 bytes, por lo que \(FR_I=\lfloor8192/40\rfloor=204\). Para la estimación se adopta un orden mínimo \(d=\lfloor204/2\rfloor=102\). Con \(V=300\) valores distintos, la altura estimada es \(HI=\lceil\log_{102}(300)\rceil=2\) niveles.
-- Índice de llave primaria de `users.app_users`: se supone una entrada de 28 bytes, por lo que \(FR_I=\lfloor8192/28\rfloor=292\). Se adopta \(d=\lfloor292/2\rfloor=146\). Para 1.100 usuarios, la altura estimada es \(HI=\lceil\log_{146}(1100)\rceil=2\) niveles.
+- `ix_audit_logs_target`: se supone una entrada de índice de 40 bytes, por lo que $FR_I=\lfloor8192/40\rfloor=204$. Para la estimación se adopta un orden mínimo $d=\lfloor204/2\rfloor=102$. Con $V=300$ valores distintos, la altura estimada es $HI=\lceil\log_{102}(300)\rceil=2$ niveles.
+- Índice de llave primaria de `users.app_users`: se supone una entrada de 28 bytes, por lo que $FR_I=\lfloor8192/28\rfloor=292$. Se adopta $d=\lfloor292/2\rfloor=146$. Para 1.100 usuarios, la altura estimada es $HI=\lceil\log_{146}(1100)\rceil=2$ niveles.
 
 Estos resultados corresponden a un modelo teórico simplificado. La altura y el número de páginas reales dependen de la estructura, la ocupación y la distribución de las claves en los índices de PostgreSQL.
 
