@@ -2,7 +2,7 @@
 
 ## 1. Objetivo
 
-Estimar el volumen de registros de las nueve tablas del modelo físico de Fabrica Escuela, considerando un escenario hipotético de uso, su crecimiento mensual y una proyección a doce meses.
+Estimar el volumen de registros de las diez tablas del modelo físico de Fabrica Escuela, considerando un escenario hipotético de uso, su crecimiento mensual y una proyección a doce meses.
 
 Las cantidades presentadas son supuestos de planeación académica. No corresponden a mediciones de producción ni a datos reales de Supabase.
 
@@ -14,6 +14,7 @@ Las cantidades presentadas son supuestos de planeación académica. No correspon
 - Las sesiones se consideran registros acumulativos mientras no se implemente una política de depuración.
 - Los registros de auditoría se conservan para facilitar la trazabilidad.
 - Los comentarios, reacciones y reportes dependen de la actividad de los usuarios.
+- Cada usuario sigue, en promedio, a 3 usuarios, y cada usuario nuevo genera unas 3 relaciones de seguimiento al mes.
 - La proyección cuenta filas; no representa bytes ni espacio real ocupado en disco.
 - No se incluyen índices, archivos externos, copias de seguridad, WAL ni sobrecarga interna de PostgreSQL.
 
@@ -30,7 +31,8 @@ Las cantidades presentadas son supuestos de planeación académica. No correspon
 | interactions.comments | 8.000 | 1.600 | 27.200 |
 | interactions.reactions | 12.000 | 2.400 | 40.800 |
 | moderation.reports | 300 | 60 | 1.020 |
-| **Total** | **27.300** | **5.630** | **94.860** |
+| interactions.user_follows | 1.500 | 150 | 3.300 |
+| **Total** | **28.800** | **5.780** | **98.160** |
 
 ## 4. Fórmula de crecimiento
 
@@ -49,9 +51,9 @@ Ejemplo para `interactions.comments`:
 
 N(12) = 8.000 + (1.600 × 12) = 27.200 registros.
 
-Para el conjunto de las nueve tablas:
+Para el conjunto de las diez tablas:
 
-N(12) = 27.300 + (5.630 × 12) = 94.860 registros.
+N(12) = 28.800 + (5.780 × 12) = 98.160 registros.
 
 ## 5. Interpretación
 
@@ -69,7 +71,7 @@ Para calcular el almacenamiento físico en bytes se necesitarían tamaños prome
 
 ## 7. Conclusión
 
-Bajo el escenario propuesto, el modelo pasaría de 27.300 a 94.860 registros en doce meses. Esta proyección permite identificar las tablas con mayor crecimiento y sirve como base para estudiar el almacenamiento, los índices y el costo de las consultas. Las cifras deberán ajustarse cuando se disponga de métricas reales de uso.
+Bajo el escenario propuesto, el modelo pasaría de 28.800 a 98.160 registros en doce meses. Esta proyección permite identificar las tablas con mayor crecimiento y sirve como base para estudiar el almacenamiento, los índices y el costo de las consultas. Las cifras deberán ajustarse cuando se disponga de métricas reales de uso.
 
 ## 8. Cálculo de almacenamiento e índices
 
@@ -81,21 +83,21 @@ Se selecciona `interactions.comments`: es una de las tablas de mayor volumen (27
 
 L = 4 · (#campos variables) + Σ tamaño(campos fijos) + tamaño(mapa de bits) + Σ tamaño estimado(campos variables)
 
-- Campos fijos: 6 `uuid` (id, user_id, project_id, post_id, parent_comment_id, target_id) = 96; `created_at` = 8; 2 `boolean` (is_root, parent_must_be_root) = 2. Σ fijos = 106 bytes.
-- Campos variables (2): `content`, supuesto de 200 bytes en promedio, y `target_type`, 4 bytes ('POST' en la mayoría). Σ variables = 204 bytes.
+- Campos fijos: 6 `uuid` (id, user_id, project_id, post_id, parent_comment_id, target_id) = 96; `created_at` = 8; 1 `boolean` (is_root) = 1. Σ fijos = 105 bytes.
+- Campos variables (3): `content`, supuesto de 200 bytes en promedio; `target_type`, 4 bytes ('POST' en la mayoría); y `moderation_status`, 7 bytes ('VISIBLE' en la mayoría). Σ variables = 211 bytes.
 - Mapa de bits: 11 campos, ⌈11 / 8⌉ = 2 bytes.
 
-L = 4 · 2 + 106 + 2 + 204 = **320 bytes**
+L = 4 · 3 + 105 + 2 + 211 = **330 bytes**
 
 ### 8.3. Factor de bloqueo
 
-FR = ⌊(P − 2) / (4 + L)⌋ = ⌊(8.192 − 2) / (4 + 320)⌋ = ⌊8.190 / 324⌋ = ⌊25,28⌋ = **25 registros por página**
+FR = ⌊(P − 2) / (4 + L)⌋ = ⌊(8.192 − 2) / (4 + 330)⌋ = ⌊8.190 / 334⌋ = ⌊24,52⌋ = **24 registros por página**
 
 ### 8.4. Páginas de la tabla
 
-BR = ⌈TR / FR⌉ = ⌈27.200 / 25⌉ = **1.088 páginas**
+BR = ⌈TR / FR⌉ = ⌈27.200 / 24⌉ = **1.134 páginas**
 
-Espacio: 1.088 × 8.192 = 8.912.896 bytes ≈ 8,5 MiB (sin índices ni espacio libre).
+Espacio: 1.134 × 8.192 = 9.289.728 bytes ≈ 8,86 MiB (sin índices ni espacio libre).
 
 ### 8.5. Organización de archivo e índice elegidos
 

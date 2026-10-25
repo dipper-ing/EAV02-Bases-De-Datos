@@ -2,7 +2,7 @@
 
 **Fábrica Escuela 2026-2 · Facultad de Ingeniería · Rol: Bases de Datos**
 
-Documentación del diseño de la base de datos de DevConnect, una red social para desarrolladores. Este repositorio integra el modelo inicial del Sprint 1 con las funcionalidades incorporadas en el Sprint 2, tomando como referencia las migraciones Flyway V1 a V12 del repositorio principal.
+Documentación del diseño de la base de datos de DevConnect, una red social para desarrolladores. Este repositorio integra el modelo inicial del Sprint 1 con las funcionalidades incorporadas en el Sprint 2, tomando como referencia las migraciones Flyway V1 a V15 del repositorio principal.
 
 Repositorio del proyecto: [EAV02-Fabrica-Escuela](https://github.com/TheMax1270/EAV02-Fabrica-Escuela)
 
@@ -10,7 +10,7 @@ Repositorio del proyecto: [EAV02-Fabrica-Escuela](https://github.com/TheMax1270/
 
 - [`schema.sql`](./schema.sql): script DDL con el modelo físico final, preparado para PostgreSQL.
 - [`queries.sql`](./queries.sql): consultas SQL para responder las preguntas de negocio de los sprints 1 y 2.
-- [`docs/modelo-entidad-relacion.md`](./docs/modelo-entidad-relacion.md): diagrama entidad-relación con las nueve entidades, sus atributos identificadores y las cardinalidades principales.
+- [`docs/modelo-entidad-relacion.md`](./docs/modelo-entidad-relacion.md): diagrama entidad-relación con las diez entidades, sus atributos identificadores y las cardinalidades principales.
 - [`README.md`](./README.md): documentación general del proyecto, instrucciones de ejecución y descripción de los entregables.
 - [`docs/analisis-almacenamiento.md`](./docs/analisis-almacenamiento.md): estimaciones de almacenamiento, organización de índices, análisis de costos de consultas y optimización mediante álgebra relacional.
 
@@ -18,7 +18,7 @@ Repositorio del proyecto: [EAV02-Fabrica-Escuela](https://github.com/TheMax1270/
 
 ## Alcance de los sprints (rol Bases de Datos)
 
-El modelo documenta las funcionalidades implementadas en el backend de DevConnect durante los sprints 1 y 2, a partir de las migraciones Flyway V1 a V12.
+El modelo documenta las funcionalidades implementadas en el backend de DevConnect durante los sprints 1 y 2, a partir de las migraciones Flyway V1 a V15.
 
 ### Sprint 1: usuarios, autenticación y proyectos
 
@@ -37,14 +37,14 @@ El modelo documenta las funcionalidades implementadas en el backend de DevConnec
 |---|---|---|
 | **HU-06 - Crear, gestionar y eliminar publicaciones y discusiones técnicas** | Crear publicaciones generales y discusiones técnicas. | `posts.posts` |
 | **HU-07 - Comentar, responder y reaccionar** | Comentar publicaciones y proyectos, responder comentarios raíz y registrar reacciones. | `interactions.comments`, `interactions.reactions` |
-| **HU-08 - Seguir y dejar de seguir desarrolladores** | Registrar las relaciones de seguimiento entre desarrolladores. | Tabla de seguimiento de desarrolladores *(por confirmar en el esquema implementado)* |
+| **HU-08 - Seguir y dejar de seguir desarrolladores** | Registrar las relaciones de seguimiento entre desarrolladores. | `interactions.user_follows` |
 | **HU-09 - Reportar contenido o perfiles** | Registrar reportes de contenido o perfiles para su revisión. | `moderation.reports` |
-| **HU-10 - Gestionar reportes y moderar contenido** | Consultar, priorizar y gestionar reportes para apoyar la moderación. | `moderation.reports` |
+| **HU-10 - Gestionar reportes y moderar contenido** | Consultar, priorizar y gestionar reportes, y cambiar el estado de moderación del contenido (visible, en revisión o removido). | `moderation.reports`; columna `moderation_status` de `posts.posts`, `interactions.comments` y `profiles.developer_profiles` |
 
 
 ### Alcance del modelo
 
-El modelo físico integra las cinco tablas del Sprint 1 con las cuatro tablas incorporadas mediante las migraciones V9 a V12. Se documentan sus atributos, claves, restricciones, índices y relaciones, así como las decisiones de almacenamiento y seguridad.
+El modelo físico integra las cinco tablas del Sprint 1 con las cinco tablas incorporadas mediante las migraciones V9 a V15. Se documentan sus atributos, claves, restricciones, índices y relaciones, así como las decisiones de almacenamiento y seguridad.
 
 Las funcionalidades descritas corresponden con la estructura de las migraciones compartidas. La asignación definitiva de cada funcionalidad a una historia de usuario deberá contrastarse con las historias aprobadas por el equipo.
 
@@ -61,7 +61,7 @@ La base de datos se organiza en esquemas de PostgreSQL para separar las responsa
 | Administración y auditoría | `admin` | `audit_logs` |
 | Proyectos | `projects` | `projects` |
 | Publicaciones | `posts` | `posts` |
-| Interacciones | `interactions` | `comments`, `reactions` |
+| Interacciones | `interactions` | `comments`, `reactions`, `user_follows` |
 | Moderación | `moderation` | `reports` |
 
 Las tablas se identifican mediante su nombre completamente calificado, compuesto por el esquema y el nombre de la tabla. Por ejemplo, `users.app_users` o `interactions.comments`.
@@ -95,6 +95,8 @@ erDiagram
     PROJECTS o|--o{ REACTIONS : "recibe"
     POSTS o|--o{ REACTIONS : "recibe"
     COMMENTS o|--o{ COMMENTS : "tiene respuestas"
+    APP_USERS ||--o{ USER_FOLLOWS : "sigue (follower_id)"
+    APP_USERS ||--o{ USER_FOLLOWS : "es seguido (followed_id)"
 
     APP_USERS {
         uuid id PK
@@ -128,6 +130,7 @@ erDiagram
         varchar portfolio_url
         timestamptz created_at
         timestamptz updated_at
+        varchar moderation_status
     }
 
     ADMIN_AUDIT_LOGS {
@@ -161,6 +164,7 @@ erDiagram
         varchar link
         text_array categories
         boolean resolved
+        varchar moderation_status
         timestamptz created_at
     }
 
@@ -172,6 +176,10 @@ erDiagram
         uuid parent_comment_id FK
         varchar content
         timestamptz created_at
+        text target_type
+        uuid target_id
+        boolean is_root
+        varchar moderation_status
     }
 
     REACTIONS {
@@ -180,6 +188,13 @@ erDiagram
         uuid project_id FK
         uuid post_id FK
         varchar type
+        timestamptz created_at
+    }
+
+    USER_FOLLOWS {
+        uuid id PK
+        uuid follower_id FK
+        uuid followed_id FK
         timestamptz created_at
     }
 
@@ -210,7 +225,9 @@ erDiagram
   dispositivos).
 - **`profiles.developer_profiles`**: perfil técnico opcional de un usuario.
   Relación **1 a 1** con `app_users` (`user_id` es `UNIQUE`): un usuario
-  tiene, como máximo, un perfil técnico.
+  tiene, como máximo, un perfil técnico. La columna `moderation_status`
+  (`VISIBLE`, `IN_REVIEW` o `REMOVED`, por defecto `VISIBLE`) permite a la
+  moderación ocultar un perfil sin borrarlo.
 - **`admin.audit_logs`**: bitácora de acciones administrativas. Cada fila
   registra **quién** (`admin_id`, FK a `app_users`), **qué** (`action`, hoy
   `USER_SUSPENDED` o `USER_REACTIVATED`), **sobre qué** (`target_type` +
@@ -230,11 +247,13 @@ erDiagram
 
 ### Entidades y sus descripciones
 
-- **`posts.posts`**: almacena las publicaciones creadas por los usuarios. El atributo `type` diferencia las publicaciones generales (`GENERAL`) de las discusiones técnicas (`TECHNICAL_DISCUSSION`). El título puede ser nulo en publicaciones generales, pero es obligatorio y no puede estar en blanco para las discusiones técnicas. `content` siempre es obligatorio. Las categorías se almacenan en un arreglo de texto, con un máximo de 20 elementos. El campo `resolved` indica si una discusión está resuelta; las publicaciones generales deben permanecer con este valor en `false`. El campo `link` es opcional y, cuando se informa, debe comenzar por `http://` o `https://`.
+- **`posts.posts`**: almacena las publicaciones creadas por los usuarios. El atributo `type` diferencia las publicaciones generales (`GENERAL`) de las discusiones técnicas (`TECHNICAL_DISCUSSION`). El título puede ser nulo en publicaciones generales, pero es obligatorio y no puede estar en blanco para las discusiones técnicas. `content` siempre es obligatorio. Las categorías se almacenan en un arreglo de texto, con un máximo de 20 elementos. El campo `resolved` indica si una discusión está resuelta; las publicaciones generales deben permanecer con este valor en `false`. El campo `link` es opcional y, cuando se informa, debe comenzar por `http://` o `https://`. La columna `moderation_status` (`VISIBLE`, `IN_REVIEW` o `REMOVED`, por defecto `VISIBLE`) registra el estado de moderación de la publicación.
 
-- **`interactions.comments`**: registra los comentarios realizados por los usuarios sobre proyectos o publicaciones. Las columnas `project_id` y `post_id` permiten identificar el contenido comentado, pero una restricción `CHECK` exige que solo una de ellas tenga valor. `parent_comment_id` identifica el comentario raíz al que responde una respuesta. Las restricciones de integridad impiden responder a un comentario que pertenezca a otro contenido o que no sea raíz. Los atributos generados `target_type`, `target_id` e `is_root` permiten reforzar estas reglas.
+- **`interactions.comments`**: registra los comentarios realizados por los usuarios sobre proyectos o publicaciones. Las columnas `project_id` y `post_id` permiten identificar el contenido comentado, pero una restricción `CHECK` exige que solo una de ellas tenga valor. `parent_comment_id` identifica el comentario al que responde una respuesta; desde la migración V14 una respuesta puede dirigirse a un comentario raíz o a otra respuesta (respuestas anidadas) mediante una clave foránea simple hacia `comments(id)`. Los atributos generados `target_type`, `target_id` e `is_root` identifican el contenido comentado y si el comentario es raíz. La columna `moderation_status` (`VISIBLE`, `IN_REVIEW` o `REMOVED`) registra el estado de moderación.
 
 - **`interactions.reactions`**: registra las reacciones de los usuarios sobre proyectos o publicaciones. Al igual que en los comentarios, cada reacción debe apuntar a un único tipo de contenido. Actualmente, el único tipo permitido es `LIKE`. Los índices únicos parciales impiden que un usuario registre más de una reacción del mismo tipo sobre el mismo proyecto o publicación.
+
+- **`interactions.user_follows`**: registra quién sigue a quién. Cada fila relaciona a un usuario seguidor (`follower_id`) con un usuario seguido (`followed_id`); ambas columnas son FK hacia `users.app_users`, por lo que `app_users` se relaciona **1 a N** con `user_follows` tanto como seguidor como seguido. Una restricción `CHECK` impide que un usuario se siga a sí mismo y la restricción `UNIQUE (follower_id, followed_id)` impide seguir dos veces al mismo usuario. El índice `(followed_id, created_at)` apoya la consulta de seguidores de un usuario.
 
 - **`moderation.reports`**: almacena los reportes enviados por usuarios para solicitar la revisión de un contenido. Registra al usuario que reporta, el tipo e identificador del contenido, el motivo, los detalles opcionales, el estado y la fecha de creación. La migración establece un índice único parcial que impide que un mismo usuario tenga más de un reporte `PENDING` para el mismo contenido. `target_id` es una referencia polimórfica: no cuenta con una clave foránea directa hacia proyectos o publicaciones.
 
@@ -242,10 +261,10 @@ erDiagram
 
 | Aspecto | Cambio en el Sprint 2 |
 |---|---|
-| Entidades nuevas | `posts`, `comments`, `reactions` y `reports` (migraciones V9 a V12) |
-| Relaciones nuevas | `app_users` 1:N con `posts`, `comments`, `reactions` y `reports`; `projects` y `posts` 0..1:N con `comments` y `reactions`; `comments` 0..1:N con `comments` (respuestas) |
-| Entidades del Sprint 1 | Sin cambios de estructura |
-| Aún no modelado en `main` | Seguimiento entre usuarios (HU-08) y estado de moderación del contenido (HU-10) |
+| Entidades nuevas | `posts`, `comments`, `reactions`, `reports` y `user_follows` (migraciones V9 a V12 y V15) |
+| Relaciones nuevas | `app_users` 1:N con `posts`, `comments`, `reactions` y `reports`; `projects` y `posts` 0..1:N con `comments` y `reactions`; `comments` 0..1:N con `comments` (respuestas); `app_users` 1:N con `user_follows` como seguidor y como seguido |
+| Entidades del Sprint 1 | `developer_profiles` incorpora `moderation_status` (V13); las demás, sin cambios de estructura |
+| Cambios en entidades del Sprint 2 | `posts` y `comments` incorporan `moderation_status` (V13); `comments` elimina `parent_must_be_root` y reemplaza la FK compuesta del padre por una FK simple, lo que permite respuestas anidadas (V14) |
 
 ## 2. Preguntas de negocio clave
 
@@ -281,6 +300,10 @@ erDiagram
     están?
 17. (HU-10) ¿Cómo se priorizan los reportes por estado, motivo y tipo de
     destino, empezando por los pendientes más antiguos?
+18. (HU-08) ¿Cuántos seguidores y cuántos seguidos tiene cada usuario?
+19. (HU-08) ¿Quiénes siguen a un usuario específico y desde cuándo?
+20. (HU-10) ¿Cuánto contenido (publicaciones, comentarios y perfiles) está en
+    revisión o removido?
 
 Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 [`queries.sql`](./queries.sql).
@@ -311,6 +334,7 @@ Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 | | `experience_level` | varchar(20) | NOT NULL, CHECK IN ('JUNIOR','SEMI_SENIOR','SENIOR') |
 | | `github_url` / `linkedin_url` / `portfolio_url` | varchar(500) | nullable |
 | | `created_at` / `updated_at` | timestamptz | NOT NULL, CHECK updated_at >= created_at |
+| | `moderation_status` | varchar(20) | NOT NULL, DEFAULT `'VISIBLE'`, CHECK IN ('VISIBLE','IN_REVIEW','REMOVED') |
 | `admin.audit_logs` | `id` | uuid | PK |
 | | `admin_id` | uuid | NOT NULL, FK → `users.app_users(id)` |
 | | `action` | varchar(100) | NOT NULL (`USER_SUSPENDED`, `USER_REACTIVATED`) |
@@ -323,7 +347,7 @@ Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 | | `title` | varchar(150) | NOT NULL |
 | | `description` | varchar(2000) | NOT NULL |
 | | `technologies` | text[] | NOT NULL |
-| | `status` | varchar(30) | NOT NULL |
+| | `status` | varchar(30) | NOT NULL (en desarrollo, finalizado o buscando colaboradores; dominio controlado por la aplicación, sin CHECK) |
 | | `repository_url` | varchar(500) | nullable |
 | | `created_at` / `updated_at` | timestamptz | NOT NULL |
 | `posts.posts` | `id` | uuid | PK |
@@ -335,18 +359,19 @@ Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 | | `link` | varchar(500) | nullable, CHECK empieza por `http://` o `https://` |
 | | `categories` | text[] | NOT NULL, DEFAULT `ARRAY[]::TEXT[]`, CHECK máx. 20 elementos sin nulos ni vacíos; al menos 1 en discusiones técnicas |
 | | `resolved` | boolean | NOT NULL, DEFAULT `FALSE`, CHECK `FALSE` si `type` = `GENERAL` |
+| | `moderation_status` | varchar(20) | NOT NULL, DEFAULT `'VISIBLE'`, CHECK IN ('VISIBLE','IN_REVIEW','REMOVED') |
 | `interactions.comments` | `id` | uuid | PK |
 | | `user_id` | uuid | NOT NULL, FK → `users.app_users(id)` |
 | | `project_id` | uuid | nullable, FK → `projects.projects(id)` |
 | | `post_id` | uuid | nullable, FK → `posts.posts(id)` |
-| | `parent_comment_id` | uuid | nullable; FK compuesta hacia `comments(id, target_type, target_id, is_root)`: el padre debe ser raíz y del mismo contenido; CHECK distinto de `id` |
+| | `parent_comment_id` | uuid | nullable; FK → `interactions.comments(id)` (permite respuestas anidadas); CHECK distinto de `id` |
 | | `content` | varchar(2000) | NOT NULL, CHECK no vacío |
 | | `created_at` | timestamptz | NOT NULL |
 | | `target_type` | text | GENERADA: `'PROJECT'` si hay `project_id`, si no `'POST'` |
 | | `target_id` | uuid | GENERADA: `COALESCE(project_id, post_id)` |
 | | `is_root` | boolean | GENERADA: `parent_comment_id IS NULL` |
-| | `parent_must_be_root` | boolean | GENERADA: siempre `TRUE` (apoya la FK compuesta) |
-| | *(tabla)* | | CHECK: exactamente uno entre `project_id` y `post_id`; UNIQUE (`id`, `target_type`, `target_id`, `is_root`) |
+| | `moderation_status` | varchar(20) | NOT NULL, DEFAULT `'VISIBLE'`, CHECK IN ('VISIBLE','IN_REVIEW','REMOVED') |
+| | *(tabla)* | | CHECK: exactamente uno entre `project_id` y `post_id`; UNIQUE (`id`, `target_type`, `target_id`, `is_root`), restricción heredada de V11 |
 | `interactions.reactions` | `id` | uuid | PK |
 | | `user_id` | uuid | NOT NULL, FK → `users.app_users(id)` |
 | | `project_id` | uuid | nullable, FK → `projects.projects(id)` |
@@ -363,13 +388,20 @@ Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 | | `status` | varchar(20) | NOT NULL (`PENDING`, `RESOLVED`, `DISMISSED`; controlado por la aplicación) |
 | | `created_at` | timestamptz | NOT NULL |
 | | *(tabla)* | | único parcial (`reporter_id`, `target_type`, `target_id`) cuando `status` = `PENDING` |
+| `interactions.user_follows` | `id` | uuid | PK |
+| | `follower_id` | uuid | NOT NULL, FK → `users.app_users(id)` ON DELETE CASCADE (quien sigue) |
+| | `followed_id` | uuid | NOT NULL, FK → `users.app_users(id)` ON DELETE CASCADE (a quien se sigue) |
+| | `created_at` | timestamptz | NOT NULL |
+| | *(tabla)* | | CHECK `follower_id <> followed_id`; UNIQUE (`follower_id`, `followed_id`) |
 
 **Índices del Sprint 2**
 
-- `posts.posts`: `ix_posts_user_id` y `ix_posts_created_at_id` (`created_at DESC`, `id DESC`).
-- `interactions.comments`: `ix_comments_user_id`; `ix_comments_project_id` e `ix_comments_post_id` (parciales); `ix_comments_project_roots` e `ix_comments_post_roots` (comentarios raíz por contenido y fecha); `ix_comments_parent_created` (respuestas por comentario padre).
+- `posts.posts`: `ix_posts_user_id`, `ix_posts_created_at_id` (`created_at DESC`, `id DESC`) e `ix_posts_moderation_status`.
+- `interactions.comments`: `ix_comments_user_id`; `ix_comments_project_id` e `ix_comments_post_id` (parciales); `ix_comments_project_roots` e `ix_comments_post_roots` (comentarios raíz por contenido y fecha); `ix_comments_parent_created` (respuestas por comentario padre) e `ix_comments_moderation_status`.
 - `interactions.reactions`: `ux_reactions_project_user_type` y `ux_reactions_post_user_type` (únicos parciales); `ix_reactions_user_id`.
 - `moderation.reports`: `ux_reports_pending_per_reporter` (único parcial, solo `PENDING`) e `ix_reports_target`.
+- `interactions.user_follows`: `ux_user_follows_pair` (único por par seguidor-seguido) e `ix_user_follows_followed` (`followed_id`, `created_at`).
+- `profiles.developer_profiles`: `ix_profiles_moderation_status`.
 
 **Decisiones de diseño en `admin.audit_logs`**
 
@@ -389,6 +421,12 @@ Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
   suspensión guarda el estado anterior y el nuevo); una columna por cada
   posible dato produciría muchas columnas nulas.
 
+**Decisiones de diseño en `interactions`**
+
+- `user_follows` usa `ON DELETE CASCADE` en ambas claves foráneas porque la fila solo existe para relacionar a dos usuarios y no tiene valor propio: si una cuenta se elimina, sus relaciones de seguimiento desaparecen con ella. `comments` y `reactions`, en cambio, usan `ON DELETE NO ACTION` y exigen resolver primero el contenido asociado.
+- Tras la migración V14, `comments` solo exige que `parent_comment_id` exista en la misma tabla. La base de datos ya no verifica que una respuesta pertenezca al mismo proyecto o publicación que su comentario padre; esa regla queda en la aplicación. Como mejora propuesta, se podría restaurar esa verificación con una FK compuesta sobre `(parent_comment_id, target_type, target_id)`.
+- La restricción `UNIQUE (id, target_type, target_id, is_root)` de `comments` se conserva porque la migración V14 no la elimina; ya no es necesaria para ninguna FK, pero mantiene el esquema idéntico al de las migraciones.
+
 
 ## Normalización
 
@@ -402,7 +440,7 @@ Estos atributos multivaluados no cumplen estrictamente el principio de atomicida
 
 ### Segunda forma normal (2FN)
 
-Las nueve tablas usan clave primaria simple (`id`), por lo que no existen dependencias parciales: todo atributo depende de la clave completa.
+Las diez tablas usan clave primaria simple (`id`), por lo que no existen dependencias parciales: todo atributo depende de la clave completa.
 
 ### Tercera forma normal (3FN)
 
@@ -415,8 +453,9 @@ En todas las tablas se cumple `id → resto de atributos`. Dependencias adiciona
 | `developer_profiles` | `user_id` es clave candidata (UNIQUE). Sin transitivas, salvo los arreglos (ver 1FN) |
 | `audit_logs` | Sin transitivas; `target_type`/`target_id` es una referencia polimórfica |
 | `projects` y `posts` | Sin transitivas, salvo los arreglos `technologies` y `categories` (ver 1FN) |
-| `comments` | `target_type`, `target_id` e `is_root` se derivan de `project_id`, `post_id` y `parent_comment_id`: es una dependencia transitiva. Son columnas **generadas y almacenadas**, las mantiene el motor (no hay anomalías de actualización) y existen para hacer cumplir la FK compuesta |
+| `comments` | `target_type`, `target_id` e `is_root` se derivan de `project_id`, `post_id` y `parent_comment_id`: es una dependencia transitiva. Son columnas **generadas y almacenadas**, las mantiene el motor (no hay anomalías de actualización) y se usan en consultas y en la restricción UNIQUE heredada de V11 |
 | `reactions` | Sin dependencias transitivas |
+| `user_follows` | Sin dependencias transitivas; (`follower_id`, `followed_id`) es clave candidata (UNIQUE) |
 | `reports` | Sin transitivas; `target_type`/`target_id` es polimórfico |
 
 **Conclusión:** el modelo está en 3FN con dos excepciones documentadas: los arreglos `TEXT[]` (1FN estricta) y las columnas generadas de `comments` (redundancia controlada por el motor).
@@ -432,11 +471,11 @@ Estas mejoras permitirían consultar y reutilizar los valores de manera más est
 
 ## 4. Modelo físico
 
-El modelo físico se implementa en PostgreSQL y se encuentra definido en [`schema.sql`](./schema.sql). Integra las cinco tablas del Sprint 1 y las cuatro tablas incorporadas en el Sprint 2, de acuerdo con las migraciones Flyway V1 a V12 del proyecto principal.
+El modelo físico se implementa en PostgreSQL y se encuentra definido en [`schema.sql`](./schema.sql). Integra las cinco tablas del Sprint 1 y las cinco tablas incorporadas en el Sprint 2, de acuerdo con las migraciones Flyway V1 a V15 del proyecto principal.
 
 ### Estructura de la base de datos
 
-El modelo contiene nueve tablas distribuidas en ocho schemas:
+El modelo contiene diez tablas distribuidas en ocho schemas:
 
 | Schema | Tabla | Propósito |
 |---|---|---|
@@ -446,8 +485,9 @@ El modelo contiene nueve tablas distribuidas en ocho schemas:
 | `admin` | `audit_logs` | Registro de acciones administrativas. |
 | `projects` | `projects` | Proyectos publicados por los usuarios. |
 | `posts` | `posts` | Publicaciones generales y discusiones técnicas. |
-| `interactions` | `comments` | Comentarios y respuestas a comentarios raíz. |
+| `interactions` | `comments` | Comentarios y respuestas, incluidas las respuestas anidadas. |
 | `interactions` | `reactions` | Reacciones sobre proyectos y publicaciones. |
+| `interactions` | `user_follows` | Relaciones de seguimiento entre usuarios. |
 | `moderation` | `reports` | Reportes de contenido para moderación. |
 
 ### Tipos de datos y restricciones
@@ -472,9 +512,11 @@ El modelo define índices para apoyar las consultas frecuentes y las restriccion
 - Índices para consultar sesiones por usuario y fecha de expiración.
 - Índices para consultar publicaciones por fecha e identificador.
 - Índices parciales para comentarios raíz, respuestas y reacciones, según el contenido asociado.
+- Índices por estado de moderación en publicaciones, comentarios y perfiles.
+- Índice para consultar los seguidores de un usuario por fecha.
 - Índices para localizar reportes por contenido y evitar reportes pendientes duplicados del mismo usuario para el mismo objetivo.
 
-La existencia de un índice no reemplaza la validación de integridad mediante restricciones. Los índices y las restricciones descritos deben coincidir con la definición real de ``.
+La existencia de un índice no reemplaza la validación de integridad mediante restricciones. Los índices y las restricciones descritos deben coincidir con la definición real de `schema.sql`.
 
 ### Ejecución del script
 
@@ -483,7 +525,7 @@ El script debe poder ejecutarse sobre una base de datos PostgreSQL vacía, respe
 Con `psql`, se puede ejecutar mediante:
 
 ```bash
-psql "postgresql://<usuario>:<password>@<host>:<puerto>/<basededatos>" -f
+psql "postgresql://<usuario>:<password>@<host>:<puerto>/<basededatos>" -f schema.sql
 ```
 
 También se puede ejecutar desde el SQL Editor de Supabase sobre una base de datos de prueba vacía. Se recomienda validar primero el script en un entorno de pruebas y comprobar que todas las tablas, restricciones e índices se creen correctamente.
@@ -506,8 +548,11 @@ principal (`backend/src/main/resources/db/migration`):
 | `V10__extend_post_types.sql` | Ampliación de los tipos de publicación admitidos. |
 | `V11__create_interactions.sql` | Creación de las tablas de comentarios y reacciones. |
 | `V12__create_reports.sql` | Creación de la tabla de reportes para moderación. |
+| `V13__add_moderation_status.sql` | Columna `moderation_status` (con CHECK e índice) en `posts.posts`, `interactions.comments` y `profiles.developer_profiles`. |
+| `V14__allow_nested_comment_replies.sql` | Eliminación de `parent_must_be_root` y de la FK compuesta del padre; nueva FK simple `fk_comments_parent`. |
+| `V15__create_user_follows.sql` | Creación de `interactions.user_follows`. |
 
-`schema.sql` consolida el estado final del modelo después de aplicar las migraciones `V1` a `V12`. Reproduce directamente la estructura definitiva de los esquemas y tablas, incluyendo las funcionalidades de publicaciones, interacciones y reportes incorporadas en las migraciones posteriores. Por eso, el script permite crear la estructura final en una base de datos vacía sin ejecutar las migraciones una por una.
+`schema.sql` consolida el estado final del modelo después de aplicar las migraciones `V1` a `V15`. Reproduce directamente la estructura definitiva de los esquemas y tablas, incluyendo las funcionalidades de publicaciones, interacciones y reportes incorporadas en las migraciones posteriores. Por eso, el script permite crear la estructura final en una base de datos vacía sin ejecutar las migraciones una por una. Para comprobarlo, se aplicaron las migraciones `V1` a `V15` sobre una base PostgreSQL 16 vacía y se ejecutó `schema.sql` sobre otra; al comparar columnas, tipos, valores por defecto, restricciones e índices de ambas (175 objetos), no se encontró ninguna diferencia.
 
 ## 6. Seguridad y privilegios de la base de datos
 
@@ -521,9 +566,9 @@ La configuración se encuentra en el archivo `security.sql`, el cual se ejecutó
 
 | Rol | Tipo de acceso | Permisos principales |
 |---|---|---|
-| `db_readonly` | Solo lectura | Consultar ocho tablas (sin auth_sessions) y app_users sin la columna password_hash. |
-| `app_runtime` | Operación de la aplicación | Consultar y gestionar datos operativos según los permisos asignados. Puede registrar reportes y consultar auditoría, pero no actualizar ni eliminar reportes, ni modificar o eliminar registros de auditoría. |
-| `app_moderator` | Moderación | Consultar y actualizar reportes, además de consultar los registros de auditoría. No puede eliminar reportes mediante los permisos asignados. |
+| `db_readonly` | Solo lectura | Consultar nueve tablas (todas menos `auth_sessions`) y `app_users` sin la columna `password_hash`. |
+| `app_runtime` | Operación de la aplicación | Consultar y gestionar datos operativos según los permisos asignados. Puede registrar reportes y consultar auditoría, pero no actualizar ni eliminar reportes, ni modificar o eliminar registros de auditoría. Puede crear y eliminar relaciones de seguimiento. |
+| `app_moderator` | Moderación | Consultar el contenido (publicaciones, comentarios y perfiles) y cambiar únicamente su `moderation_status`; consultar reportes y cambiar únicamente su `status`; consultar y registrar auditoría. No puede eliminar contenido ni reportes. |
 
 Los tres roles se crearon con el atributo `NOLOGIN`, por lo que funcionan como roles de privilegios y no como cuentas de conexión. Las credenciales y la asignación de estos permisos a la conexión de la aplicación deben definirse con el equipo de backend.
 
@@ -536,11 +581,12 @@ El script `security.sql` utiliza instrucciones `GRANT` para asignar permisos y `
 |---|---|---|---|
 | `users.app_users` | SELECT (sin `password_hash`) | SELECT, INSERT, UPDATE | — |
 | `authentication.auth_sessions` | — | SELECT, INSERT, UPDATE, DELETE | — |
-| `profiles.developer_profiles` | SELECT | SELECT, INSERT, UPDATE, DELETE | — |
+| `profiles.developer_profiles` | SELECT | SELECT, INSERT, UPDATE, DELETE | SELECT; UPDATE solo en `moderation_status` |
 | `projects.projects` | SELECT | SELECT, INSERT, UPDATE, DELETE | — |
-| `posts.posts` | SELECT | SELECT, INSERT, UPDATE, DELETE | SELECT |
-| `interactions.comments` | SELECT | SELECT, INSERT, UPDATE, DELETE | SELECT |
+| `posts.posts` | SELECT | SELECT, INSERT, UPDATE, DELETE | SELECT; UPDATE solo en `moderation_status` |
+| `interactions.comments` | SELECT | SELECT, INSERT, UPDATE, DELETE | SELECT; UPDATE solo en `moderation_status` |
 | `interactions.reactions` | SELECT | SELECT, INSERT, UPDATE, DELETE | — |
+| `interactions.user_follows` | SELECT | SELECT, INSERT, DELETE | — |
 | `moderation.reports` | SELECT | SELECT, INSERT | SELECT; UPDATE solo en `status` |
 | `admin.audit_logs` | SELECT | SELECT, INSERT | SELECT, INSERT |
 
@@ -550,6 +596,17 @@ El script `security.sql` utiliza instrucciones `GRANT` para asignar permisos y `
 <summary>Script completo de roles y permisos (<code>security.sql</code>)</summary>
 
 ```sql
+-- ============================================================
+-- EAV02 - Fabrica Escuela
+-- Sprint 2 | Seguridad y privilegios de la base de datos
+-- Alcance: roles y permisos de PostgreSQL
+-- Ejecutar despues de schema.sql en una base de datos de prueba.
+-- ============================================================
+
+-- 1. Crear roles de grupo sin inicio de sesion propio.
+-- Las credenciales de conexion de la aplicacion se definiran
+-- posteriormente con el equipo de backend.
+
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -604,6 +661,7 @@ GRANT SELECT ON projects.projects TO db_readonly;
 GRANT SELECT ON posts.posts TO db_readonly;
 GRANT SELECT ON interactions.comments TO db_readonly;
 GRANT SELECT ON interactions.reactions TO db_readonly;
+GRANT SELECT ON interactions.user_follows TO db_readonly;
 GRANT SELECT ON moderation.reports TO db_readonly;
 
 -- 5. Rol de ejecucion de la aplicacion.
@@ -631,6 +689,12 @@ ON interactions.comments TO app_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
 ON interactions.reactions TO app_runtime;
 
+-- Seguir y dejar de seguir: se crean y se eliminan relaciones,
+-- nunca se modifican.
+
+GRANT SELECT, INSERT, DELETE
+ON interactions.user_follows TO app_runtime;
+
 -- La aplicacion puede consultar y registrar reportes,
 -- pero no resolverlos ni cambiar su estado con este rol.
 
@@ -644,31 +708,39 @@ GRANT SELECT, INSERT
 ON admin.audit_logs TO app_runtime;
 
 -- 6. Rol de moderacion.
--- Puede revisar el contenido (publicaciones y comentarios), consultar
--- reportes y cambiar unicamente su estado; no puede eliminarlos.
--- Registra sus acciones en la auditoria.
+-- Puede revisar el contenido (publicaciones, comentarios y perfiles) y
+-- cambiar unicamente su estado de moderacion (moderation_status), sin
+-- poder editarlo ni eliminarlo. Consulta reportes y cambia unicamente su
+-- estado; no puede eliminarlos. Registra sus acciones en la auditoria.
 
 GRANT SELECT ON posts.posts TO app_moderator;
+GRANT UPDATE (moderation_status) ON posts.posts TO app_moderator;
+
 GRANT SELECT ON interactions.comments TO app_moderator;
+GRANT UPDATE (moderation_status) ON interactions.comments TO app_moderator;
+
+GRANT SELECT ON profiles.developer_profiles TO app_moderator;
+GRANT UPDATE (moderation_status) ON profiles.developer_profiles TO app_moderator;
 
 GRANT SELECT ON moderation.reports TO app_moderator;
 GRANT UPDATE (status) ON moderation.reports TO app_moderator;
 
 GRANT SELECT, INSERT ON admin.audit_logs TO app_moderator;
-
 ```
 
 </details>
 
-Los permisos se asignan por esquema y tabla. El rol db_readonly recibe SELECT en ocho tablas y, en users.app_users, solo sobre columnas no sensibles. El rol `app_runtime` recibe permisos operativos sobre las tablas funcionales, con restricciones específicas en `moderation.reports` y `admin.audit_logs`. El rol `app_moderator` recibe permisos de consulta y actualización sobre los reportes, sin permiso de eliminación.
+Los permisos se asignan por esquema y tabla. El rol `db_readonly` recibe `SELECT` en nueve tablas y, en `users.app_users`, solo sobre columnas no sensibles. El rol `app_runtime` recibe permisos operativos sobre las tablas funcionales, con restricciones específicas en `moderation.reports`, `admin.audit_logs` e `interactions.user_follows` (sin `UPDATE`). El rol `app_moderator` recibe permisos de consulta sobre el contenido y los reportes, y de actualización solo sobre las columnas de estado, sin permiso de eliminación.
 
 ### 6.4. Validación de la configuración
 
 La configuración se probó en una base de datos local mediante consultas a los catálogos y funciones de privilegios de PostgreSQL. Se obtuvieron los siguientes resultados:
 
 - Se verificó la existencia de los tres roles y su atributo `NOLOGIN`.
-- Se comprobó que db_readonly no puede leer users.app_users.password_hash ni authentication.auth_sessions (permission denied).
-- Se comprobó que app_moderator puede actualizar moderation.reports.status, pero no otras columnas (permission denied al intentar modificar reason).
+- Se comprobó que `db_readonly` no puede leer `users.app_users.password_hash` ni `authentication.auth_sessions` (`permission denied`).
+- Se comprobó que `app_moderator` puede actualizar `moderation.reports.status`, pero no otras columnas (`permission denied` al intentar modificar `reason`).
+- Se comprobó que `app_moderator` puede actualizar `moderation_status` en `posts.posts` y `profiles.developer_profiles`, pero no otras columnas ni eliminar publicaciones (`permission denied`).
+- Se comprobó que `app_runtime` puede eliminar en `interactions.user_follows`, pero no actualizar (`permission denied`), y que `db_readonly` puede consultarla.
 - Se verificó que `db_readonly` no tiene permiso para insertar usuarios.
 - Se comprobó que `app_runtime` puede registrar reportes, pero no actualizarlos ni eliminar registros de auditoría.
 - Se verificó que `app_moderator` puede actualizar reportes, pero no eliminarlos.
@@ -880,6 +952,50 @@ GROUP BY status, reason, target_type
 ORDER BY CASE WHEN status = 'PENDING' THEN 0 ELSE 1 END,
          reporte_mas_antiguo ASC;
 ```
+
+#### Consulta 18 (HU-08). ¿Cuántos seguidores y cuántos seguidos tiene cada usuario?
+
+```sql
+SELECT u.username,
+       COUNT(DISTINCT fr.id) AS seguidores,
+       COUNT(DISTINCT fg.id) AS siguiendo
+FROM users.app_users u
+LEFT JOIN interactions.user_follows fr ON fr.followed_id = u.id
+LEFT JOIN interactions.user_follows fg ON fg.follower_id = u.id
+GROUP BY u.id, u.username
+ORDER BY seguidores DESC, u.username;
+```
+
+#### Consulta 19 (HU-08). ¿Quiénes siguen a un usuario y desde cuándo?
+
+```sql
+SELECT seguidor.username AS seguidor, f.created_at AS siguiendo_desde
+FROM interactions.user_follows f
+JOIN users.app_users seguidor ON seguidor.id = f.follower_id
+WHERE f.followed_id = (SELECT id FROM users.app_users WHERE username = 'usuario_demo')
+ORDER BY f.created_at DESC;
+```
+
+#### Consulta 20 (HU-10). ¿Cuánto contenido está en revisión o removido, por tipo de contenido?
+
+```sql
+SELECT 'POST' AS tipo_contenido, moderation_status, COUNT(*) AS total
+FROM posts.posts
+WHERE moderation_status <> 'VISIBLE'
+GROUP BY moderation_status
+UNION ALL
+SELECT 'COMMENT', moderation_status, COUNT(*)
+FROM interactions.comments
+WHERE moderation_status <> 'VISIBLE'
+GROUP BY moderation_status
+UNION ALL
+SELECT 'PROFILE', moderation_status, COUNT(*)
+FROM profiles.developer_profiles
+WHERE moderation_status <> 'VISIBLE'
+GROUP BY moderation_status
+ORDER BY tipo_contenido, moderation_status;
+```
+
 ## 8. Estimación de volumen
 
 Escenario hipotético de planeación académica, con crecimiento mensual constante. Detalle y fórmula N(t) = N inicial + (G mensual × t) en [`docs/analisis-almacenamiento.md`](./docs/analisis-almacenamiento.md).
@@ -895,7 +1011,8 @@ Escenario hipotético de planeación académica, con crecimiento mensual constan
 | interactions.comments | 8.000 | 1.600 | 27.200 | ≈ 5 comentarios por cada publicación nueva |
 | interactions.reactions | 12.000 | 2.400 | 40.800 | ≈ 6 reacciones por publicación o proyecto |
 | moderation.reports | 300 | 60 | 1.020 | 1 reporte por cada 5 publicaciones |
-| **Total** | **27.300** | **5.630** | **94.860** | |
+| interactions.user_follows | 1.500 | 150 | 3.300 | ≈ 3 relaciones de seguimiento por usuario al inicio; ≈ 3 nuevas relaciones por cada usuario nuevo |
+| **Total** | **28.800** | **5.780** | **98.160** | |
 
 ## INTEGRANTES:
 
