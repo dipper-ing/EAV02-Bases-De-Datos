@@ -150,3 +150,37 @@ FROM moderation.reports
 GROUP BY status, reason, target_type
 ORDER BY CASE WHEN status = 'PENDING' THEN 0 ELSE 1 END,
          reporte_mas_antiguo ASC;
+
+-- Consulta 18 (HU-08). ¿Cuántos seguidores y cuántos seguidos tiene cada usuario?
+SELECT u.username,
+       COUNT(DISTINCT fr.id) AS seguidores,
+       COUNT(DISTINCT fg.id) AS siguiendo
+FROM users.app_users u
+LEFT JOIN interactions.user_follows fr ON fr.followed_id = u.id
+LEFT JOIN interactions.user_follows fg ON fg.follower_id = u.id
+GROUP BY u.id, u.username
+ORDER BY seguidores DESC, u.username;
+
+-- Consulta 19 (HU-08). ¿Quiénes siguen a un usuario y desde cuándo?
+SELECT seguidor.username AS seguidor, f.created_at AS siguiendo_desde
+FROM interactions.user_follows f
+JOIN users.app_users seguidor ON seguidor.id = f.follower_id
+WHERE f.followed_id = (SELECT id FROM users.app_users WHERE username = 'usuario_demo')
+ORDER BY f.created_at DESC;
+
+-- Consulta 20 (HU-10). ¿Cuánto contenido está en revisión o removido, por tipo de contenido?
+SELECT 'POST' AS tipo_contenido, moderation_status, COUNT(*) AS total
+FROM posts.posts
+WHERE moderation_status <> 'VISIBLE'
+GROUP BY moderation_status
+UNION ALL
+SELECT 'COMMENT', moderation_status, COUNT(*)
+FROM interactions.comments
+WHERE moderation_status <> 'VISIBLE'
+GROUP BY moderation_status
+UNION ALL
+SELECT 'PROFILE', moderation_status, COUNT(*)
+FROM profiles.developer_profiles
+WHERE moderation_status <> 'VISIBLE'
+GROUP BY moderation_status
+ORDER BY tipo_contenido, moderation_status;
