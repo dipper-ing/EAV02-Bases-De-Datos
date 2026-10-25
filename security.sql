@@ -1,4 +1,3 @@
-
 -- ============================================================
 -- EAV02 - Fabrica Escuela
 -- Sprint 2 | Seguridad y privilegios de la base de datos
@@ -50,16 +49,21 @@ GRANT USAGE ON SCHEMA users, authentication, profiles, admin,
     projects, posts, interactions, moderation
 TO db_readonly, app_runtime, app_moderator;
 
--- 4. Rol de consulta: solamente lectura en las nueve tablas.
+-- 4. Rol de consulta: solo lectura.
+-- No puede ver users.app_users.password_hash (se otorga SELECT solo
+-- sobre columnas no sensibles) ni authentication.auth_sessions
+-- (refresh_token_hash es un dato sensible de sesion).
 
-GRANT SELECT ON ALL TABLES IN SCHEMA users TO db_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA authentication TO db_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA profiles TO db_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA admin TO db_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA projects TO db_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA posts TO db_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA interactions TO db_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA moderation TO db_readonly;
+GRANT SELECT (id, full_name, username, email, role, enabled, created_at)
+ON users.app_users TO db_readonly;
+
+GRANT SELECT ON profiles.developer_profiles TO db_readonly;
+GRANT SELECT ON admin.audit_logs TO db_readonly;
+GRANT SELECT ON projects.projects TO db_readonly;
+GRANT SELECT ON posts.posts TO db_readonly;
+GRANT SELECT ON interactions.comments TO db_readonly;
+GRANT SELECT ON interactions.reactions TO db_readonly;
+GRANT SELECT ON moderation.reports TO db_readonly;
 
 -- 5. Rol de ejecucion de la aplicacion.
 -- Puede operar sobre las tablas funcionales, sin administrar
@@ -99,10 +103,14 @@ GRANT SELECT, INSERT
 ON admin.audit_logs TO app_runtime;
 
 -- 6. Rol de moderacion.
--- Puede consultar y actualizar reportes, pero no eliminarlos.
+-- Puede revisar el contenido (publicaciones y comentarios), consultar
+-- reportes y cambiar unicamente su estado; no puede eliminarlos.
+-- Registra sus acciones en la auditoria.
 
-GRANT SELECT, UPDATE
-ON moderation.reports TO app_moderator;
+GRANT SELECT ON posts.posts TO app_moderator;
+GRANT SELECT ON interactions.comments TO app_moderator;
 
-GRANT SELECT
-ON admin.audit_logs TO app_moderator;
+GRANT SELECT ON moderation.reports TO app_moderator;
+GRANT UPDATE (status) ON moderation.reports TO app_moderator;
+
+GRANT SELECT, INSERT ON admin.audit_logs TO app_moderator;
