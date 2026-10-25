@@ -55,10 +55,13 @@ CREATE TABLE profiles.developer_profiles (
     portfolio_url varchar(500),
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    CONSTRAINT ck_developer_profiles_dates CHECK (updated_at >= created_at)
+    moderation_status varchar(20) NOT NULL DEFAULT 'VISIBLE',
+    CONSTRAINT ck_developer_profiles_dates CHECK (updated_at >= created_at),
+    CONSTRAINT ck_profiles_moderation_status CHECK (moderation_status IN ('VISIBLE', 'IN_REVIEW', 'REMOVED'))
 );
 
 CREATE INDEX ix_developer_profiles_user_id ON profiles.developer_profiles (user_id);
+CREATE INDEX ix_profiles_moderation_status ON profiles.developer_profiles (moderation_status);
 
 
 -- Se crea la tabla de auditoría de acciones administrativas.
@@ -95,7 +98,7 @@ CREATE INDEX ix_projects_user_id ON projects.projects (user_id);
 -- Publicaciones generales y discusiones técnicas.
 CREATE TABLE posts.posts (
     id uuid PRIMARY KEY,
-    user_id uuid NOT NULL REFERENCES users.app_users(id),
+    user_id uuid NOT NULL,
     title varchar(150),
     content varchar(5000) NOT NULL,
     created_at timestamptz NOT NULL,
@@ -103,9 +106,12 @@ CREATE TABLE posts.posts (
     link varchar(500),
     categories text[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     resolved boolean NOT NULL DEFAULT FALSE,
+    moderation_status varchar(20) NOT NULL DEFAULT 'VISIBLE',
+
+    CONSTRAINT fk_posts_user FOREIGN KEY (user_id) REFERENCES users.app_users(id),
 
     CONSTRAINT ck_posts_title_not_blank
-        CHECK (title IS NULL OR title ~ '[^[:space:]]'),
+        CHECK (title ~ '[^[:space:]]'),
 
     CONSTRAINT ck_posts_content_not_blank
         CHECK (content ~ '[^[:space:]]'),
@@ -139,11 +145,15 @@ CREATE TABLE posts.posts (
         CHECK (type <> 'GENERAL' OR resolved = FALSE),
 
     CONSTRAINT ck_posts_link
-        CHECK (link IS NULL OR link ~ '^https?://[^[:space:]]+$')
+        CHECK (link IS NULL OR link ~ '^https?://[^[:space:]]+$'),
+
+    CONSTRAINT ck_posts_moderation_status
+        CHECK (moderation_status IN ('VISIBLE', 'IN_REVIEW', 'REMOVED'))
 );
 
 CREATE INDEX ix_posts_user_id ON posts.posts (user_id);
 CREATE INDEX ix_posts_created_at_id ON posts.posts (created_at DESC, id DESC);
+CREATE INDEX ix_posts_moderation_status ON posts.posts (moderation_status);
 
 -- Comentarios sobre proyectos y publicaciones.
 CREATE TABLE interactions.comments (
@@ -167,7 +177,7 @@ CREATE TABLE interactions.comments (
         parent_comment_id IS NULL
     ) STORED,
 
-    parent_must_be_root boolean GENERATED ALWAYS AS (TRUE) STORED,
+    moderation_status varchar(20) NOT NULL DEFAULT 'VISIBLE',
 
     CONSTRAINT ck_comments_target CHECK (
         (project_id IS NOT NULL AND post_id IS NULL)
@@ -184,20 +194,13 @@ CREATE TABLE interactions.comments (
     CONSTRAINT uq_comments_identity_target_root
         UNIQUE (id, target_type, target_id, is_root),
 
-    CONSTRAINT fk_comments_parent_same_target_root
-        FOREIGN KEY (
-            parent_comment_id,
-            target_type,
-            target_id,
-            parent_must_be_root
-        )
-        REFERENCES interactions.comments (
-            id,
-            target_type,
-            target_id,
-            is_root
-        )
-        ON DELETE NO ACTION
+    CONSTRAINT fk_comments_parent
+        FOREIGN KEY (parent_comment_id)
+        REFERENCES interactions.comments (id)
+        ON DELETE NO ACTION,
+
+    CONSTRAINT ck_comments_moderation_status
+        CHECK (moderation_status IN ('VISIBLE', 'IN_REVIEW', 'REMOVED'))
 );
 
 CREATE INDEX ix_comments_user_id
@@ -222,6 +225,9 @@ CREATE INDEX ix_comments_post_roots
 CREATE INDEX ix_comments_parent_created
     ON interactions.comments (parent_comment_id, created_at, id)
     WHERE parent_comment_id IS NOT NULL;
+
+CREATE INDEX ix_comments_moderation_status
+    ON interactions.comments (moderation_status);
 
 
 CREATE TABLE interactions.reactions (
@@ -253,6 +259,20 @@ CREATE UNIQUE INDEX ux_reactions_post_user_type
 
 CREATE INDEX ix_reactions_user_id
     ON interactions.reactions (user_id);
+
+-- Relaciones de seguimiento entre usuarios.
+CREATE TABLE interactions.user_follows (
+    id uuid PRIMARY KEY,
+    follower_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    followed_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL,
+
+    CONSTRAINT ck_user_follows_not_self CHECK (follower_id <> followed_id),
+    CONSTRAINT ux_user_follows_pair UNIQUE (follower_id, followed_id)
+);
+
+CREATE INDEX ix_user_follows_followed
+    ON interactions.user_follows (followed_id, created_at);
 
 
 -- Reportes de contenido para revisión por moderación.

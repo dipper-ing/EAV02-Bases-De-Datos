@@ -63,6 +63,7 @@ GRANT SELECT ON projects.projects TO db_readonly;
 GRANT SELECT ON posts.posts TO db_readonly;
 GRANT SELECT ON interactions.comments TO db_readonly;
 GRANT SELECT ON interactions.reactions TO db_readonly;
+GRANT SELECT ON interactions.user_follows TO db_readonly;
 GRANT SELECT ON moderation.reports TO db_readonly;
 
 -- 5. Rol de ejecucion de la aplicacion.
@@ -90,6 +91,12 @@ ON interactions.comments TO app_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
 ON interactions.reactions TO app_runtime;
 
+-- Seguir y dejar de seguir: se crean y se eliminan relaciones,
+-- nunca se modifican.
+
+GRANT SELECT, INSERT, DELETE
+ON interactions.user_follows TO app_runtime;
+
 -- La aplicacion puede consultar y registrar reportes,
 -- pero no resolverlos ni cambiar su estado con este rol.
 
@@ -103,12 +110,19 @@ GRANT SELECT, INSERT
 ON admin.audit_logs TO app_runtime;
 
 -- 6. Rol de moderacion.
--- Puede revisar el contenido (publicaciones y comentarios), consultar
--- reportes y cambiar unicamente su estado; no puede eliminarlos.
--- Registra sus acciones en la auditoria.
+-- Puede revisar el contenido (publicaciones, comentarios y perfiles) y
+-- cambiar unicamente su estado de moderacion (moderation_status), sin
+-- poder editarlo ni eliminarlo. Consulta reportes y cambia unicamente su
+-- estado; no puede eliminarlos. Registra sus acciones en la auditoria.
 
 GRANT SELECT ON posts.posts TO app_moderator;
+GRANT UPDATE (moderation_status) ON posts.posts TO app_moderator;
+
 GRANT SELECT ON interactions.comments TO app_moderator;
+GRANT UPDATE (moderation_status) ON interactions.comments TO app_moderator;
+
+GRANT SELECT ON profiles.developer_profiles TO app_moderator;
+GRANT UPDATE (moderation_status) ON profiles.developer_profiles TO app_moderator;
 
 GRANT SELECT ON moderation.reports TO app_moderator;
 GRANT UPDATE (status) ON moderation.reports TO app_moderator;
