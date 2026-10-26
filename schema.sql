@@ -1,10 +1,14 @@
+
 -- Schemas por dominio: un schema por módulo del backend.
 -- En public solo permanece flyway_schema_history (control de migraciones).
-CREATE SCHEMA users;
-CREATE SCHEMA authentication;
-CREATE SCHEMA profiles;
-CREATE SCHEMA admin;
-CREATE SCHEMA projects;
+CREATE SCHEMA IF NOT EXISTS users;
+CREATE SCHEMA IF NOT EXISTS authentication;
+CREATE SCHEMA IF NOT EXISTS profiles;
+CREATE SCHEMA IF NOT EXISTS admin;
+CREATE SCHEMA IF NOT EXISTS projects;
+CREATE SCHEMA IF NOT EXISTS posts;
+CREATE SCHEMA IF NOT EXISTS interactions;
+CREATE SCHEMA IF NOT EXISTS moderation;
 
 
 -- Se crea la tabla de usuarios de la plataforma.
@@ -51,10 +55,13 @@ CREATE TABLE profiles.developer_profiles (
     portfolio_url varchar(500),
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    CONSTRAINT ck_developer_profiles_dates CHECK (updated_at >= created_at)
+    moderation_status varchar(20) NOT NULL DEFAULT 'VISIBLE',
+    CONSTRAINT ck_developer_profiles_dates CHECK (updated_at >= created_at),
+    CONSTRAINT ck_profiles_moderation_status CHECK (moderation_status IN ('VISIBLE', 'IN_REVIEW', 'REMOVED'))
 );
 
 CREATE INDEX ix_developer_profiles_user_id ON profiles.developer_profiles (user_id);
+CREATE INDEX ix_profiles_moderation_status ON profiles.developer_profiles (moderation_status);
 
 
 -- Se crea la tabla de auditoría de acciones administrativas.
@@ -87,3 +94,205 @@ CREATE TABLE projects.projects (
 );
 
 CREATE INDEX ix_projects_user_id ON projects.projects (user_id);
+
+-- Publicaciones generales y discusiones técnicas.
+CREATE TABLE posts.posts (
+    id uuid PRIMARY KEY,
+    user_id uuid NOT NULL,
+    title varchar(150),
+    content varchar(5000) NOT NULL,
+    created_at timestamptz NOT NULL,
+    type varchar(30) NOT NULL DEFAULT 'GENERAL',
+    link varchar(500),
+    categories text[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    resolved boolean NOT NULL DEFAULT FALSE,
+    moderation_status varchar(20) NOT NULL DEFAULT 'VISIBLE',
+
+    CONSTRAINT fk_posts_user FOREIGN KEY (user_id) REFERENCES users.app_users(id),
+
+    CONSTRAINT ck_posts_title_not_blank
+        CHECK (title ~ '[^[:space:]]'),
+
+    CONSTRAINT ck_posts_content_not_blank
+        CHECK (content ~ '[^[:space:]]'),
+
+    CONSTRAINT ck_posts_type
+        CHECK (type IN ('GENERAL', 'TECHNICAL_DISCUSSION')),
+
+    CONSTRAINT ck_posts_discussion_title
+        CHECK (
+            type <> 'TECHNICAL_DISCUSSION'
+            OR (title IS NOT NULL AND title ~ '[^[:space:]]')
+        ),
+
+    CONSTRAINT ck_posts_discussion_categories
+        CHECK (
+            type <> 'TECHNICAL_DISCUSSION'
+            OR (
+                cardinality(categories) >= 1
+                AND array_to_string(categories, '') ~ '[^[:space:]]'
+            )
+        ),
+
+    CONSTRAINT ck_posts_categories
+        CHECK (
+            cardinality(categories) <= 20
+            AND array_position(categories, NULL) IS NULL
+            AND array_position(categories, '') IS NULL
+        ),
+
+    CONSTRAINT ck_posts_general_unresolved
+        CHECK (type <> 'GENERAL' OR resolved = FALSE),
+
+    CONSTRAINT ck_posts_link
+        CHECK (link IS NULL OR link ~ '^https?://[^[:space:]]+$'),
+
+    CONSTRAINT ck_posts_moderation_status
+        CHECK (moderation_status IN ('VISIBLE', 'IN_REVIEW', 'REMOVED'))
+);
+
+CREATE INDEX ix_posts_user_id ON posts.posts (user_id);
+CREATE INDEX ix_posts_created_at_id ON posts.posts (created_at DESC, id DESC);
+CREATE INDEX ix_posts_moderation_status ON posts.posts (moderation_status);
+
+-- Comentarios sobre proyectos y publicaciones.
+CREATE TABLE interactions.comments (
+    id uuid PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE NO ACTION,
+    project_id uuid REFERENCES projects.projects(id) ON DELETE NO ACTION,
+    post_id uuid REFERENCES posts.posts(id) ON DELETE NO ACTION,
+    parent_comment_id uuid,
+    content varchar(2000) NOT NULL,
+    created_at timestamptz NOT NULL,
+
+    target_type text GENERATED ALWAYS AS (
+        CASE WHEN project_id IS NOT NULL THEN 'PROJECT' ELSE 'POST' END
+    ) STORED,
+
+    target_id uuid GENERATED ALWAYS AS (
+        COALESCE(project_id, post_id)
+    ) STORED,
+
+    is_root boolean GENERATED ALWAYS AS (
+        parent_comment_id IS NULL
+    ) STORED,
+
+    moderation_status varchar(20) NOT NULL DEFAULT 'VISIBLE',
+
+    CONSTRAINT ck_comments_target CHECK (
+        (project_id IS NOT NULL AND post_id IS NULL)
+        OR
+        (project_id IS NULL AND post_id IS NOT NULL)
+    ),
+
+    CONSTRAINT ck_comments_content_not_blank
+        CHECK (content ~ '[^[:space:]]'),
+
+    CONSTRAINT ck_comments_parent_not_self
+        CHECK (parent_comment_id IS NULL OR parent_comment_id <> id),
+
+    CONSTRAINT uq_comments_identity_target_root
+        UNIQUE (id, target_type, target_id, is_root),
+
+    CONSTRAINT fk_comments_parent
+        FOREIGN KEY (parent_comment_id)
+        REFERENCES interactions.comments (id)
+        ON DELETE NO ACTION,
+
+    CONSTRAINT ck_comments_moderation_status
+        CHECK (moderation_status IN ('VISIBLE', 'IN_REVIEW', 'REMOVED'))
+);
+
+CREATE INDEX ix_comments_user_id
+    ON interactions.comments (user_id);
+
+CREATE INDEX ix_comments_project_id
+    ON interactions.comments (project_id)
+    WHERE project_id IS NOT NULL;
+
+CREATE INDEX ix_comments_post_id
+    ON interactions.comments (post_id)
+    WHERE post_id IS NOT NULL;
+
+CREATE INDEX ix_comments_project_roots
+    ON interactions.comments (project_id, created_at, id)
+    WHERE project_id IS NOT NULL AND parent_comment_id IS NULL;
+
+CREATE INDEX ix_comments_post_roots
+    ON interactions.comments (post_id, created_at, id)
+    WHERE post_id IS NOT NULL AND parent_comment_id IS NULL;
+
+CREATE INDEX ix_comments_parent_created
+    ON interactions.comments (parent_comment_id, created_at, id)
+    WHERE parent_comment_id IS NOT NULL;
+
+CREATE INDEX ix_comments_moderation_status
+    ON interactions.comments (moderation_status);
+
+
+CREATE TABLE interactions.reactions (
+    id uuid PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE NO ACTION,
+    project_id uuid REFERENCES projects.projects(id) ON DELETE NO ACTION,
+    post_id uuid REFERENCES posts.posts(id) ON DELETE NO ACTION,
+    type varchar(10) NOT NULL DEFAULT 'LIKE',
+    created_at timestamptz NOT NULL,
+
+    CONSTRAINT ck_reactions_type
+        CHECK (type = 'LIKE'),
+
+    CONSTRAINT ck_reactions_target
+        CHECK (
+            (project_id IS NOT NULL AND post_id IS NULL)
+            OR
+            (project_id IS NULL AND post_id IS NOT NULL)
+        )
+);
+
+CREATE UNIQUE INDEX ux_reactions_project_user_type
+    ON interactions.reactions (project_id, user_id, type)
+    WHERE project_id IS NOT NULL;
+
+CREATE UNIQUE INDEX ux_reactions_post_user_type
+    ON interactions.reactions (post_id, user_id, type)
+    WHERE post_id IS NOT NULL;
+
+CREATE INDEX ix_reactions_user_id
+    ON interactions.reactions (user_id);
+
+-- Relaciones de seguimiento entre usuarios.
+CREATE TABLE interactions.user_follows (
+    id uuid PRIMARY KEY,
+    follower_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    followed_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL,
+
+    CONSTRAINT ck_user_follows_not_self CHECK (follower_id <> followed_id),
+    CONSTRAINT ux_user_follows_pair UNIQUE (follower_id, followed_id)
+);
+
+CREATE INDEX ix_user_follows_followed
+    ON interactions.user_follows (followed_id, created_at);
+
+
+-- Reportes de contenido para revisión por moderación.
+CREATE TABLE moderation.reports (
+    id uuid PRIMARY KEY,
+    reporter_id uuid NOT NULL REFERENCES users.app_users(id),
+    target_type varchar(20) NOT NULL,
+    target_id uuid NOT NULL,
+    reason varchar(30) NOT NULL,
+    details varchar(500),
+    status varchar(20) NOT NULL,
+    created_at timestamptz NOT NULL
+);
+
+-- Evita que un usuario tenga reportes pendientes duplicados
+-- para el mismo contenido.
+CREATE UNIQUE INDEX ux_reports_pending_per_reporter
+    ON moderation.reports (reporter_id, target_type, target_id)
+    WHERE status = 'PENDING';
+
+-- Facilita localizar reportes asociados a un contenido.
+CREATE INDEX ix_reports_target
+    ON moderation.reports (target_type, target_id);
