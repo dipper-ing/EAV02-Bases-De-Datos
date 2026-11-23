@@ -1,8 +1,8 @@
-# DevConnect — Diseño de Base de Datos (Sprint 1 y 2)
+# DevConnect — Diseño de Base de Datos (Sprints 1, 2 y 3)
 
 **Fábrica Escuela 2026-2 · Facultad de Ingeniería · Rol: Bases de Datos**
 
-Documentación del diseño de la base de datos de DevConnect, una red social para desarrolladores. Este repositorio integra el modelo inicial del Sprint 1 con las funcionalidades incorporadas en el Sprint 2, tomando como referencia las migraciones Flyway V1 a V15 del repositorio principal.
+Documentación del diseño de la base de datos de DevConnect, una red social para desarrolladores. Este repositorio integra el modelo inicial del Sprint 1 con las funcionalidades incorporadas en los Sprints 2 y 3, tomando como referencia las migraciones Flyway V1 a V18 del repositorio principal. Los cambios del Sprint 3 se resumen en la sección [Cambios respecto al Sprint 2](#cambios-respecto-al-sprint-2).
 
 Repositorio del proyecto: [EAV02-Fabrica-Escuela](https://github.com/TheMax1270/EAV02-Fabrica-Escuela)
 
@@ -10,7 +10,7 @@ Repositorio del proyecto: [EAV02-Fabrica-Escuela](https://github.com/TheMax1270/
 
 - [`schema.sql`](./schema.sql): script DDL con el modelo físico final, preparado para PostgreSQL.
 - [`queries.sql`](./queries.sql): consultas SQL para responder las preguntas de negocio de los sprints 1 y 2.
-- [`docs/modelo-entidad-relacion.md`](./docs/modelo-entidad-relacion.md): diagrama entidad-relación con las diez entidades, sus atributos identificadores y las cardinalidades principales.
+- [`docs/modelo-entidad-relacion.md`](./docs/modelo-entidad-relacion.md): diagrama entidad-relación con las catorce entidades, sus atributos identificadores y las cardinalidades principales.
 - [`README.md`](./README.md): documentación general del proyecto, instrucciones de ejecución y descripción de los entregables.
 - [`docs/analisis-almacenamiento.md`](./docs/analisis-almacenamiento.md): estimaciones de almacenamiento, organización de índices, análisis de costos de consultas y optimización mediante álgebra relacional.
 
@@ -18,7 +18,7 @@ Repositorio del proyecto: [EAV02-Fabrica-Escuela](https://github.com/TheMax1270/
 
 ## Alcance de los sprints (rol Bases de Datos)
 
-El modelo documenta las funcionalidades implementadas en el backend de DevConnect durante los sprints 1 y 2, a partir de las migraciones Flyway V1 a V15.
+El modelo documenta las funcionalidades implementadas en el backend de DevConnect durante los sprints 1, 2 y 3, a partir de las migraciones Flyway V1 a V18.
 
 ### Sprint 1: usuarios, autenticación y proyectos
 
@@ -41,10 +41,18 @@ El modelo documenta las funcionalidades implementadas en el backend de DevConnec
 | **HU-09 - Reportar contenido o perfiles** | Registrar reportes de contenido o perfiles para su revisión. | `moderation.reports` |
 | **HU-10 - Gestionar reportes y moderar contenido** | Consultar, priorizar y gestionar reportes, y cambiar el estado de moderación del contenido (visible, en revisión o removido). | `moderation.reports`; columna `moderation_status` de `posts.posts`, `interactions.comments` y `profiles.developer_profiles` |
 
+### Sprint 3: bloqueos, mensajería, notificaciones y estadísticas
+
+| Historia de usuario | Funcionalidad | Tabla(s) asociada(s) |
+|---|---|---|
+| **HU-11 - Bloquear usuarios** | Bloquear y desbloquear a otro usuario. El bloqueo impide enviarse mensajes y seguirse, y elimina los seguimientos entre ambos. | `interactions.user_blocks` (V16) |
+| **HU-12 - Mensajería privada uno a uno** | Enviar mensajes de texto y consultar el historial de una conversación, que es única para cada par de usuarios. | `messaging.conversations`, `messaging.messages` (V17) |
+| **HU-13 - Notificaciones in-app** | Notificar comentarios, reacciones, nuevos seguidores y mensajes; mostrar el contador de no leídas y marcarlas como leídas. | `notifications.notifications` (V18) |
+| **HU-14 - Estadísticas de crecimiento y actividad** | Métricas de usuarios y de actividad por rango de fechas, agrupadas por semana o mes. | Sin tablas nuevas; consulta `created_at` de las tablas existentes |
 
 ### Alcance del modelo
 
-El modelo físico integra las cinco tablas del Sprint 1 con las cinco tablas incorporadas mediante las migraciones V9 a V15. Se documentan sus atributos, claves, restricciones, índices y relaciones, así como las decisiones de almacenamiento y seguridad.
+El modelo físico integra las cinco tablas del Sprint 1, las cinco del Sprint 2 (migraciones V9 a V15) y las cuatro del Sprint 3 (migraciones V16 a V18). Se documentan sus atributos, claves, restricciones, índices y relaciones, así como las decisiones de almacenamiento y seguridad.
 
 Las funcionalidades descritas corresponden con la estructura de las migraciones compartidas. La asignación definitiva de cada funcionalidad a una historia de usuario deberá contrastarse con las historias aprobadas por el equipo.
 
@@ -61,8 +69,10 @@ La base de datos se organiza en esquemas de PostgreSQL para separar las responsa
 | Administración y auditoría | `admin` | `audit_logs` |
 | Proyectos | `projects` | `projects` |
 | Publicaciones | `posts` | `posts` |
-| Interacciones | `interactions` | `comments`, `reactions`, `user_follows` |
+| Interacciones | `interactions` | `comments`, `reactions`, `user_follows`, `user_blocks` |
 | Moderación | `moderation` | `reports` |
+| Mensajería | `messaging` | `conversations`, `messages` |
+| Notificaciones | `notifications` | `notifications` |
 
 Las tablas se identifican mediante su nombre completamente calificado, compuesto por el esquema y el nombre de la tabla. Por ejemplo, `users.app_users` o `interactions.comments`.
 
@@ -71,10 +81,27 @@ Las tablas se identifican mediante su nombre completamente calificado, compuesto
 - **Separación por responsabilidad:** cada esquema agrupa tablas relacionadas con un módulo funcional.
 - **Integridad referencial:** las claves foráneas conectan las entidades que dependen unas de otras.
 - **Seguridad:** la separación por esquemas facilita documentar y asignar permisos según el rol de cada usuario.
-- **Evolución del modelo:** los esquemas `posts`, `interactions` y `moderation` incorporan las funcionalidades del Sprint 2.
+- **Evolución del modelo:** los esquemas `posts`, `interactions` y `moderation` incorporan las funcionalidades del Sprint 2. En el Sprint 3 se agregan `messaging` y `notifications`, e `interactions` incorpora `user_blocks`.
 
 El esquema `public` conserva los objetos que se encuentren allí por configuración de PostgreSQL; las tablas de negocio descritas en este modelo se organizan en los esquemas indicados.
 
+
+## Cambios respecto al Sprint 2
+
+Esta sección resume lo nuevo o modificado en el Sprint 3 frente a la entrega del Sprint 2 (migraciones V1 a V15), organizado por entregable.
+
+### MER
+
+| Cambio | Tipo | HU | Justificación |
+|---|---|---|---|
+| Nueva entidad `USER_BLOCKS` con relaciones 1:N desde `APP_USERS` como bloqueador y como bloqueado | Entidad y relaciones nuevas | HU-11 | El bloqueo es una relación dirigida entre dos usuarios. Se modela como tabla asociativa (igual que `USER_FOLLOWS`) para admitir muchos bloqueos por usuario y conservar la fecha. |
+| Nueva entidad `CONVERSATIONS` con dos relaciones 1:N desde `APP_USERS` (`user_one_id`, `user_two_id`) | Entidad y relaciones nuevas | HU-12 | La HU exige que los mensajes queden asociados a "la conversación entre ambos usuarios". Guardar el par ordenado garantiza una única conversación por pareja. |
+| Nueva entidad `MESSAGES` con relaciones 1:N desde `CONVERSATIONS` y desde `APP_USERS` (remitente) | Entidad y relaciones nuevas | HU-12 | Guarda el historial cronológico de la conversación. El destinatario se deduce de la conversación para no duplicar el dato. |
+| Nueva entidad `NOTIFICATIONS` con relaciones 1:N desde `APP_USERS` como destinatario y como actor | Entidad y relaciones nuevas | HU-13 | Notificaciones in-app de comentarios, likes, nuevos seguidores y mensajes, con estado de lectura (`read_at`) para el contador de no leídas. |
+| `target_id` de `NOTIFICATIONS` como referencia polimórfica sin FK | Decisión de diseño | HU-13 | Sigue el mismo patrón que `REPORTS` y `AUDIT_LOGS`: el destino puede ser una publicación, un proyecto o un usuario. |
+| Nuevos schemas `messaging` y `notifications`; `user_blocks` se agrega a `interactions` | Organización | HU-11, HU-12, HU-13 | Se mantiene el criterio de un schema por módulo del backend (paquetes `messaging` y `notification`). |
+| HU-14 sin entidades nuevas | Sin cambio (justificado) | HU-14 | Las estadísticas se calculan sobre `created_at` de las tablas existentes. |
+| Entidades de los Sprints 1 y 2 | Sin cambios de estructura | — | Las migraciones V16 a V18 no modifican tablas existentes. |
 
 ## 1. Entidades y relaciones
 
@@ -97,6 +124,14 @@ erDiagram
     COMMENTS o|--o{ COMMENTS : "tiene respuestas"
     APP_USERS ||--o{ USER_FOLLOWS : "sigue (follower_id)"
     APP_USERS ||--o{ USER_FOLLOWS : "es seguido (followed_id)"
+    APP_USERS ||--o{ USER_BLOCKS : "bloquea (blocker_id)"
+    APP_USERS ||--o{ USER_BLOCKS : "es bloqueado (blocked_id)"
+    APP_USERS ||--o{ CONVERSATIONS : "participa (user_one_id)"
+    APP_USERS ||--o{ CONVERSATIONS : "participa (user_two_id)"
+    CONVERSATIONS ||--o{ MESSAGES : "contiene"
+    APP_USERS ||--o{ MESSAGES : "envia (sender_id)"
+    APP_USERS ||--o{ NOTIFICATIONS : "recibe (recipient_id)"
+    APP_USERS ||--o{ NOTIFICATIONS : "origina (actor_id)"
 
     APP_USERS {
         uuid id PK
@@ -208,6 +243,41 @@ erDiagram
         varchar status
         timestamptz created_at
     }
+
+    USER_BLOCKS {
+        uuid id PK
+        uuid blocker_id FK "quien bloquea"
+        uuid blocked_id FK "usuario bloqueado"
+        timestamptz created_at
+    }
+
+    CONVERSATIONS {
+        uuid id PK
+        uuid user_one_id FK "menor UUID del par"
+        uuid user_two_id FK "mayor UUID del par"
+        timestamptz created_at
+        timestamptz last_message_at
+    }
+
+    MESSAGES {
+        uuid id PK
+        uuid conversation_id FK
+        uuid sender_id FK
+        text content "1 a 2000 caracteres"
+        timestamptz created_at
+    }
+
+    NOTIFICATIONS {
+        uuid id PK
+        uuid recipient_id FK "destinatario"
+        uuid actor_id FK "quien origina"
+        varchar type "COMMENT, LIKE, FOLLOWER, MESSAGE"
+        varchar target_type "POST, PROJECT, USER"
+        uuid target_id "polimorfico, sin FK"
+        varchar target_label
+        timestamptz created_at
+        timestamptz read_at "NULL = no leida"
+    }
 ```
 
 **Descripción de entidades**
@@ -256,6 +326,18 @@ erDiagram
 - **`interactions.user_follows`**: registra quién sigue a quién. Cada fila relaciona a un usuario seguidor (`follower_id`) con un usuario seguido (`followed_id`); ambas columnas son FK hacia `users.app_users`, por lo que `app_users` se relaciona **1 a N** con `user_follows` tanto como seguidor como seguido. Una restricción `CHECK` impide que un usuario se siga a sí mismo y la restricción `UNIQUE (follower_id, followed_id)` impide seguir dos veces al mismo usuario. El índice `(followed_id, created_at)` apoya la consulta de seguidores de un usuario.
 
 - **`moderation.reports`**: almacena los reportes enviados por usuarios para solicitar la revisión de un contenido. Registra al usuario que reporta, el tipo e identificador del contenido, el motivo, los detalles opcionales, el estado y la fecha de creación. La migración establece un índice único parcial que impide que un mismo usuario tenga más de un reporte `PENDING` para el mismo contenido. `target_id` es una referencia polimórfica: no cuenta con una clave foránea directa hacia proyectos o publicaciones.
+
+### Entidades incorporadas en el Sprint 3
+
+- **`interactions.user_blocks`** (HU-11, migración V16): registra que un usuario (`blocker_id`) bloqueó a otro (`blocked_id`). Ambas columnas son FK hacia `users.app_users` con `ON DELETE CASCADE`, por lo que `app_users` se relaciona **1 a N** con `user_blocks` como bloqueador y como bloqueado. Un `CHECK` impide bloquearse a sí mismo y `UNIQUE (blocker_id, blocked_id)` impide repetir el bloqueo. El bloqueo es dirigido (que A bloquee a B no implica que B bloquee a A), pero sus efectos (no enviarse mensajes ni seguirse) se aplican en ambos sentidos. Se ubica en el schema `interactions` porque restringe interacciones sociales que ya existían (seguir y enviar mensajes).
+
+- **`messaging.conversations`** (HU-12, migración V17): conversación privada **única por par de usuarios**. El par se guarda ordenado (`CHECK user_one_id < user_two_id`) y con `UNIQUE (user_one_id, user_two_id)`. Así, la pareja (A, B) y la pareja (B, A) se representan con la misma fila y no pueden existir dos conversaciones entre las mismas personas. `last_message_at` desnormaliza la fecha del último mensaje para listar las conversaciones de un usuario por actividad sin agregar sobre `messages`. `app_users` se relaciona **1 a N** con `conversations` a través de cada una de las dos columnas de participante.
+
+- **`messaging.messages`** (HU-12, migración V17): mensajes de una conversación. Relación **1 a N** con `conversations` (`ON DELETE CASCADE`: si se elimina la conversación, se elimina su historial) y **1 a N** con `app_users` mediante `sender_id`. El destinatario no se almacena: se deduce como el otro participante de la conversación, lo que evita datos redundantes que podrían contradecirse (3FN). El contenido es `text` con `CHECK` de no vacío y de máximo 2000 caracteres.
+
+- **`notifications.notifications`** (HU-13, migración V18): notificaciones in-app. `recipient_id` (quien la recibe) y `actor_id` (quien la origina) son FK hacia `app_users`; un `CHECK` impide que un usuario se notifique a sí mismo. `type` (`COMMENT`, `LIKE`, `FOLLOWER`, `MESSAGE`) y `target_type` (`POST`, `PROJECT`, `USER`) se controlan con `CHECK`. `target_id` es una referencia **polimórfica** sin FK, igual que en `reports` y `audit_logs`, porque puede apuntar a publicaciones, proyectos o usuarios. `target_label` guarda un texto corto para mostrar (por ejemplo, el título de la publicación) sin consultar la tabla destino. Un `read_at` nulo significa "no leída", y su valor indica **cuándo** se leyó. Un índice único parcial evita duplicar notificaciones `LIKE` y `FOLLOWER` no leídas cuando el usuario repite la acción (por ejemplo, dar y quitar "me gusta" varias veces).
+
+- **HU-14 (estadísticas de crecimiento)** no agrega entidades: las métricas se obtienen de la columna `created_at` de las tablas existentes (`app_users`, `posts`, `projects`, `comments`, `reactions`, `user_follows`, `messages`).
 
 ### Cambios frente al Sprint 1
 
