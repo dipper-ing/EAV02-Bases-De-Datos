@@ -83,7 +83,7 @@ Las tablas se identifican mediante su nombre completamente calificado, compuesto
 - **Seguridad:** la separación por esquemas facilita documentar y asignar permisos según el rol de cada usuario.
 - **Evolución del modelo:** los esquemas `posts`, `interactions` y `moderation` incorporan las funcionalidades del Sprint 2. En el Sprint 3 se agregan `messaging` y `notifications`, e `interactions` incorpora `user_blocks`.
 
-El esquema `public` conserva los objetos que se encuentren allí por configuración de PostgreSQL; las tablas de negocio descritas en este modelo se organizan en los esquemas indicados.
+El esquema `public` conserva los objetos que se encuentren allí por configuración de PostgreSQL (como `flyway_schema_history`) y, desde el Sprint 3, la función utilitaria compartida `public.fn_set_updated_at()` (ver [sección 9](#9-triggers)). Las tablas de negocio descritas en este modelo se organizan en los esquemas indicados.
 
 
 ## Cambios respecto al Sprint 2
@@ -118,6 +118,18 @@ Esta sección resume lo nuevo o modificado en el Sprint 3 frente a la entrega de
 | Encabezado del script y comentarios por HU | Documentación | — | Cada bloque indica la migración y la HU que atiende. |
 
 > Los refinamientos (`CHECK` e índice nuevos sobre `reports` y `projects`) **no existen todavía en las migraciones Flyway**. Se proponen al equipo de backend como una migración `V19`. Los valores de los `CHECK` se tomaron de los enums del backend, que los persiste como texto (`@Enumerated(EnumType.STRING)`), por lo que los datos válidos de la aplicación no se ven afectados.
+
+### Triggers
+
+| Cambio | Tipo | HU | Justificación |
+|---|---|---|---|
+| Función auxiliar `interactions.fn_users_blocked(a, b)` | Función nueva | HU-11 | Centraliza la regla "existe un bloqueo en cualquier sentido", que usan los triggers T2 y T5. |
+| Triggers T1 a T3 sobre `messaging.messages` | Triggers nuevos | HU-12, HU-11 | Validan que el remitente participe en la conversación y que no exista un bloqueo, y mantienen `last_message_at`. |
+| Trigger T4 sobre `interactions.user_blocks` | Trigger nuevo | HU-11 | Al bloquear se eliminan los seguimientos entre ambos usuarios. |
+| Trigger T5 sobre `interactions.user_follows` | Trigger nuevo | HU-11, HU-08 | Impide seguir a un usuario con un bloqueo activo. |
+| Función genérica `public.fn_set_updated_at()` y triggers T6 sobre `developer_profiles` y `projects` | Función y triggers nuevos | HU-03, HU-04 | Mantienen `updated_at` cuando el contenido cambia y la aplicación no lo actualizó. |
+
+En el Sprint 2 el esquema no tenía triggers: todas estas reglas existían solo en el backend. Llevarlas a la base de datos garantiza que se cumplan aunque los datos se modifiquen fuera de la aplicación (scripts, SQL Editor de Supabase, otros servicios). El detalle está en la [sección 9](#9-triggers).
 
 ## 1. Entidades y relaciones
 
@@ -707,6 +719,8 @@ principal (`backend/src/main/resources/db/migration`):
 
 Verificación del Sprint 3 (PostgreSQL 18): se aplicaron las migraciones `V1` a `V18` (omitiendo `V4`, reemplazada por `V5`) sobre una base vacía y se ejecutaron `schema.sql` y `security.sql` sobre otra, sin errores. La comparación de columnas, restricciones e índices (318 objetos frente a 325) muestra solo las 7 diferencias intencionales: los 6 `CHECK` y el índice de refinamiento. Además, se comprobó que los valores válidos de los enums del backend se aceptan, que los valores fuera de dominio se rechazan con la restricción esperada y que `queries.sql` se ejecuta sin errores sobre el esquema refinado.
 
+Los triggers y funciones de la [sección 9](#9-triggers) tampoco existen en las migraciones: son reglas que el backend ya aplica en sus servicios y que la base de datos ahora también garantiza. Se diseñaron para no interferir con el backend (ver "Compatibilidad con el backend" en esa sección).
+
 ## 6. Seguridad y privilegios de la base de datos
 
 ### 6.1. Estrategia de seguridad
@@ -1166,6 +1180,85 @@ Escenario hipotético de planeación académica, con crecimiento mensual constan
 | moderation.reports | 300 | 60 | 1.020 | 1 reporte por cada 5 publicaciones |
 | interactions.user_follows | 1.500 | 150 | 3.300 | ≈ 3 relaciones de seguimiento por usuario al inicio; ≈ 3 nuevas relaciones por cada usuario nuevo |
 | **Total** | **28.800** | **5.780** | **98.160** | |
+
+## 9. Triggers
+
+Los triggers están definidos al final de [`schema.sql`](./schema.sql), en la sección `TRIGGERS (Sprint 3)`. Cada uno automatiza una regla de una historia de usuario. Sus funciones se ubican en el schema del dominio al que pertenecen, salvo la utilidad genérica `fn_set_updated_at`, que está en `public`.
+
+### Resumen
+
+| # | Trigger | Tabla | Evento | Momento | Función | Propósito | HU |
+|---|---|---|---|---|---|---|---|
+| T1 | `trg_messages_a_check_participant` | `messaging.messages` | `INSERT` | `BEFORE`, por fila | `messaging.fn_messages_check_participant()` | Rechaza el mensaje si el remitente no es uno de los dos participantes de la conversación. | HU-12 |
+| T2 | `trg_messages_b_check_block` | `messaging.messages` | `INSERT` | `BEFORE`, por fila | `messaging.fn_messages_check_block()` | Rechaza el mensaje si existe un bloqueo, en cualquier sentido, entre el remitente y el otro participante. | HU-12, HU-11 |
+| T3 | `trg_messages_touch_conversation` | `messaging.messages` | `INSERT` | `AFTER`, por fila | `messaging.fn_messages_touch_conversation()` | Actualiza `conversations.last_message_at` con la fecha del mensaje, sin retroceder nunca la fecha. | HU-12 |
+| T4 | `trg_user_blocks_remove_follows` | `interactions.user_blocks` | `INSERT` | `AFTER`, por fila | `interactions.fn_user_blocks_remove_follows()` | Elimina los seguimientos entre bloqueador y bloqueado, en los dos sentidos. | HU-11 |
+| T5 | `trg_user_follows_check_block` | `interactions.user_follows` | `INSERT` | `BEFORE`, por fila | `interactions.fn_user_follows_check_block()` | Impide seguir a un usuario si existe un bloqueo entre ambos. | HU-11, HU-08 |
+| T6 | `trg_developer_profiles_set_updated_at` | `profiles.developer_profiles` | `UPDATE` | `BEFORE`, por fila | `public.fn_set_updated_at('moderation_status')` | Asigna `updated_at` si el perfil cambió y la aplicación no lo actualizó. Los cambios de moderación no cuentan como edición. | HU-03 |
+| T6 | `trg_projects_set_updated_at` | `projects.projects` | `UPDATE` | `BEFORE`, por fila | `public.fn_set_updated_at()` | Asigna `updated_at` si el proyecto cambió y la aplicación no lo actualizó. | HU-04 |
+
+Función auxiliar: `interactions.fn_users_blocked(p_user_a uuid, p_user_b uuid) RETURNS boolean` devuelve `true` si cualquiera de los dos usuarios bloqueó al otro. Es `STABLE` y `SECURITY DEFINER` con `search_path` fijo, para que el rol de la aplicación pueda comprobar un bloqueo sin leer directamente `user_blocks`.
+
+### Detalle de cada trigger
+
+**T1 y T2: validaciones al enviar un mensaje (HU-12, HU-11).** La HU-12 exige que el mensaje quede asociado a la conversación entre ambos usuarios y que no se pueda enviar si existe un bloqueo. T1 comprueba que `sender_id` sea `user_one_id` o `user_two_id` de la conversación. T2 calcula el destinatario (el otro participante) y llama a `fn_users_blocked`. Ambos lanzan una excepción con `SQLSTATE 23514` (`check_violation`), por lo que el `INSERT` no se realiza. PostgreSQL ejecuta los triggers de un mismo evento en orden alfabético; los prefijos `a_` y `b_` garantizan que T1 se ejecute antes que T2.
+
+**T3: actividad de la conversación (HU-12).** La bandeja de mensajes se ordena por `last_message_at`. Tras cada mensaje, el trigger asigna `last_message_at = NEW.created_at` solo si la fecha nueva es posterior. Así, un mensaje insertado con fecha anterior no hace retroceder la conversación.
+
+**T4: efectos del bloqueo (HU-11).** Bloquear a un usuario implica dejar de seguirse mutuamente. El trigger elimina las filas de `user_follows` en los dos sentidos.
+
+**T5: no seguir con un bloqueo activo (HU-11, HU-08).** Complementa a T4: impide crear un seguimiento nuevo mientras exista el bloqueo. Al desbloquear (eliminar la fila de `user_blocks`), se puede volver a seguir.
+
+**T6: fecha de última edición (HU-03, HU-04).** La función genérica compara la fila nueva con la anterior mediante `to_jsonb(NEW)` y `to_jsonb(OLD)`, excluyendo `updated_at` y las columnas recibidas como argumento del trigger. Si hubo un cambio real y `updated_at` no se modificó, asigna `greatest(now(), OLD.updated_at)`, lo que mantiene válida la restricción `updated_at >= created_at`. En los perfiles se excluye `moderation_status`, porque que un moderador oculte un perfil no es una edición de su dueño.
+
+### Compatibilidad con el backend
+
+El backend ya aplica estas reglas en sus servicios (`MessagingService`, `BlockService`, `FollowService` y las entidades `Project` y `DeveloperProfile`). Los triggers se diseñaron para no duplicar ni contradecir ese comportamiento:
+
+- T1, T2 y T5 solo rechazan operaciones que el backend ya rechaza antes de llegar a la base de datos.
+- T3 asigna la misma fecha que el backend (`registerMessage(now)`) y no hace nada si la fecha ya está actualizada.
+- T4 elimina los mismos seguimientos que `BlockService`; si el backend los elimina después, su `DELETE` simplemente no encuentra filas.
+- T6 no sobrescribe `updated_at` cuando la aplicación lo informa.
+- Ningún trigger crea notificaciones: el backend las crea en `NotificationService`, y hacerlo también en la base de datos las duplicaría.
+
+### Pruebas
+
+Se ejecutaron sobre una base PostgreSQL 18 vacía, después de `schema.sql` y `security.sql`:
+
+| Trigger | Caso | Resultado |
+|---|---|---|
+| T1 | Un usuario ajeno a la conversación envía un mensaje | Rechazado: "El remitente ... no participa en la conversación ..." |
+| T3 | Mensaje con fecha posterior | `last_message_at` avanza a la fecha del mensaje |
+| T3 | Mensaje con fecha anterior | `last_message_at` no cambia |
+| T4 | A y B se siguen mutuamente y A sigue a C; B bloquea a A | Se eliminan A→B y B→A; A→C se conserva |
+| T2 | El usuario bloqueado envía un mensaje | Rechazado: "existe un bloqueo entre ..." |
+| T2 | El usuario que bloqueó envía un mensaje | Rechazado (el bloqueo aplica en ambos sentidos) |
+| T5 | El usuario bloqueado intenta seguir a quien lo bloqueó | Rechazado: "No se puede seguir: existe un bloqueo ..." |
+| T5 | Un tercer usuario sin bloqueo sigue a B / A sigue a B tras desbloquear | Permitido |
+| T6 | Se edita la biografía sin tocar `updated_at` | `updated_at` se actualiza a la fecha actual |
+| T6 | Solo cambia `moderation_status` del perfil | `updated_at` no cambia |
+| T6 | La aplicación informa `updated_at` | Se respeta el valor informado |
+| T6 | `UPDATE` sin cambios reales | `updated_at` no cambia |
+
+Ejemplo para reproducir T4 y T2 (con usuarios `ana`, `beto` y una conversación entre ambos ya creados):
+
+```sql
+-- beto bloquea a ana: T4 elimina los follows entre ambos
+INSERT INTO interactions.user_blocks (id, blocker_id, blocked_id, created_at)
+SELECT gen_random_uuid(), b.id, a.id, now()
+FROM users.app_users a, users.app_users b
+WHERE a.username = 'ana' AND b.username = 'beto';
+
+-- ana intenta escribirle a beto: T2 rechaza el INSERT
+INSERT INTO messaging.messages (id, conversation_id, sender_id, content, created_at)
+SELECT gen_random_uuid(), c.id, a.id, 'hola', now()
+FROM users.app_users a
+JOIN users.app_users b ON b.username = 'beto'
+JOIN messaging.conversations c
+  ON c.user_one_id = LEAST(a.id, b.id) AND c.user_two_id = GREATEST(a.id, b.id)
+WHERE a.username = 'ana';
+-- ERROR:  No se puede enviar el mensaje: existe un bloqueo entre ... y ...
+```
 
 ## INTEGRANTES:
 

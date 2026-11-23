@@ -438,3 +438,187 @@ CREATE INDEX ix_notifications_recipient_unread
 CREATE UNIQUE INDEX ux_notifications_unread_dedupe
     ON notifications.notifications (recipient_id, actor_id, type, target_type, target_id)
     WHERE read_at IS NULL AND type IN ('LIKE', 'FOLLOWER');
+
+
+-- ============================================================
+-- TRIGGERS (Sprint 3)
+-- Automatizan reglas de las HU en la base de datos. Son compatibles con
+-- el backend: si la aplicación ya aplicó la regla, el trigger no cambia
+-- nada (no duplica datos ni sobrescribe valores informados).
+-- ============================================================
+
+-- Función auxiliar: ¿existe un bloqueo entre dos usuarios, en cualquier
+-- sentido? La usan los triggers de mensajes y de seguimiento (HU-11).
+-- SECURITY DEFINER para que el rol de la aplicación pueda comprobar el
+-- bloqueo sin necesitar permisos de lectura directa sobre user_blocks.
+CREATE OR REPLACE FUNCTION interactions.fn_users_blocked(p_user_a uuid, p_user_b uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM interactions.user_blocks b
+        WHERE (b.blocker_id = p_user_a AND b.blocked_id = p_user_b)
+           OR (b.blocker_id = p_user_b AND b.blocked_id = p_user_a)
+    );
+$$;
+
+
+-- T1 · HU-12 · BEFORE INSERT ON messaging.messages
+-- El remitente debe ser uno de los dos participantes de la conversación.
+-- (Los triggers del mismo evento se ejecutan en orden alfabético: el
+-- prefijo "a_" garantiza que esta validación ocurra antes que T2.)
+CREATE OR REPLACE FUNCTION messaging.fn_messages_check_participant()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM messaging.conversations c
+        WHERE c.id = NEW.conversation_id
+          AND NEW.sender_id IN (c.user_one_id, c.user_two_id)
+    ) THEN
+        RAISE EXCEPTION 'El remitente % no participa en la conversación %',
+            NEW.sender_id, NEW.conversation_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_messages_a_check_participant
+    BEFORE INSERT ON messaging.messages
+    FOR EACH ROW
+    EXECUTE FUNCTION messaging.fn_messages_check_participant();
+
+
+-- T2 · HU-12 / HU-11 · BEFORE INSERT ON messaging.messages
+-- No se puede enviar un mensaje si existe un bloqueo entre el remitente
+-- y el otro participante, en cualquier sentido.
+CREATE OR REPLACE FUNCTION messaging.fn_messages_check_block()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_recipient uuid;
+BEGIN
+    SELECT CASE WHEN c.user_one_id = NEW.sender_id THEN c.user_two_id
+                ELSE c.user_one_id END
+      INTO v_recipient
+      FROM messaging.conversations c
+     WHERE c.id = NEW.conversation_id;
+
+    IF interactions.fn_users_blocked(NEW.sender_id, v_recipient) THEN
+        RAISE EXCEPTION 'No se puede enviar el mensaje: existe un bloqueo entre % y %',
+            NEW.sender_id, v_recipient
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_messages_b_check_block
+    BEFORE INSERT ON messaging.messages
+    FOR EACH ROW
+    EXECUTE FUNCTION messaging.fn_messages_check_block();
+
+
+-- T3 · HU-12 · AFTER INSERT ON messaging.messages
+-- Mantiene conversations.last_message_at con la fecha del mensaje más
+-- reciente, para ordenar la bandeja por actividad. Nunca retrocede la fecha.
+CREATE OR REPLACE FUNCTION messaging.fn_messages_touch_conversation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE messaging.conversations
+       SET last_message_at = NEW.created_at
+     WHERE id = NEW.conversation_id
+       AND last_message_at < NEW.created_at;
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER trg_messages_touch_conversation
+    AFTER INSERT ON messaging.messages
+    FOR EACH ROW
+    EXECUTE FUNCTION messaging.fn_messages_touch_conversation();
+
+
+-- T4 · HU-11 · AFTER INSERT ON interactions.user_blocks
+-- Al bloquear, se eliminan los seguimientos entre ambos usuarios en los
+-- dos sentidos.
+CREATE OR REPLACE FUNCTION interactions.fn_user_blocks_remove_follows()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    DELETE FROM interactions.user_follows f
+     WHERE (f.follower_id = NEW.blocker_id AND f.followed_id = NEW.blocked_id)
+        OR (f.follower_id = NEW.blocked_id AND f.followed_id = NEW.blocker_id);
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER trg_user_blocks_remove_follows
+    AFTER INSERT ON interactions.user_blocks
+    FOR EACH ROW
+    EXECUTE FUNCTION interactions.fn_user_blocks_remove_follows();
+
+
+-- T5 · HU-11 / HU-08 · BEFORE INSERT ON interactions.user_follows
+-- No se puede seguir a un usuario si existe un bloqueo entre ambos.
+CREATE OR REPLACE FUNCTION interactions.fn_user_follows_check_block()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF interactions.fn_users_blocked(NEW.follower_id, NEW.followed_id) THEN
+        RAISE EXCEPTION 'No se puede seguir: existe un bloqueo entre % y %',
+            NEW.follower_id, NEW.followed_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_user_follows_check_block
+    BEFORE INSERT ON interactions.user_follows
+    FOR EACH ROW
+    EXECUTE FUNCTION interactions.fn_user_follows_check_block();
+
+
+-- T6 · HU-03 / HU-04 · BEFORE UPDATE ON developer_profiles y projects
+-- Función genérica: si el contenido de la fila cambió y la aplicación no
+-- actualizó updated_at, la BD lo asigna. Los argumentos del trigger son
+-- columnas que no cuentan como edición (por ejemplo, moderation_status:
+-- ocultar un perfil no es una edición de su dueño).
+-- Se ubica en public por ser una utilidad compartida entre schemas.
+CREATE OR REPLACE FUNCTION public.fn_set_updated_at()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_ignored text[] := array_append(coalesce(TG_ARGV::text[], '{}'), 'updated_at');
+BEGIN
+    IF NEW.updated_at IS NOT DISTINCT FROM OLD.updated_at
+       AND (to_jsonb(NEW) - v_ignored) IS DISTINCT FROM (to_jsonb(OLD) - v_ignored) THEN
+        NEW.updated_at := greatest(now(), OLD.updated_at);
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_developer_profiles_set_updated_at
+    BEFORE UPDATE ON profiles.developer_profiles
+    FOR EACH ROW
+    EXECUTE FUNCTION public.fn_set_updated_at('moderation_status');
+
+CREATE TRIGGER trg_projects_set_updated_at
+    BEFORE UPDATE ON projects.projects
+    FOR EACH ROW
+    EXECUTE FUNCTION public.fn_set_updated_at();
