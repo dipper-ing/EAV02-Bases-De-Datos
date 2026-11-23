@@ -103,6 +103,22 @@ Esta sección resume lo nuevo o modificado en el Sprint 3 frente a la entrega de
 | HU-14 sin entidades nuevas | Sin cambio (justificado) | HU-14 | Las estadísticas se calculan sobre `created_at` de las tablas existentes. |
 | Entidades de los Sprints 1 y 2 | Sin cambios de estructura | — | Las migraciones V16 a V18 no modifican tablas existentes. |
 
+### Script (`schema.sql`)
+
+| Cambio | Tipo | HU | Justificación |
+|---|---|---|---|
+| Schemas `messaging` y `notifications` | Estructura nueva (V17, V18) | HU-12, HU-13 | Un schema por módulo del backend. |
+| Tabla `interactions.user_blocks` con `CHECK` de no autobloqueo, `UNIQUE (blocker_id, blocked_id)`, FKs `ON DELETE CASCADE` e índice `ix_user_blocks_blocked` | Estructura nueva (V16) | HU-11 | Registrar bloqueos sin duplicados. El índice apoya la consulta "¿quién me bloqueó?" (la `UNIQUE` ya cubre la búsqueda por bloqueador). |
+| Tabla `messaging.conversations` con `CHECK (user_one_id < user_two_id)`, `UNIQUE (user_one_id, user_two_id)` e índices por participante y `last_message_at DESC` | Estructura nueva (V17) | HU-12 | Una sola conversación por pareja; bandeja de conversaciones ordenada por actividad. |
+| Tabla `messaging.messages` con `CHECK` de contenido no vacío y de máximo 2000 caracteres, e índice `(conversation_id, created_at DESC, id DESC)` | Estructura nueva (V17) | HU-12 | Historial cronológico paginado por conversación. |
+| Tabla `notifications.notifications` con `CHECK` sobre `type`, `target_type` y no autonotificación; índices de listado, de no leídas (parcial) y único parcial de deduplicación | Estructura nueva (V18) | HU-13 | Listado paginado, contador de no leídas sin recorrer las leídas y sin duplicar likes ni seguidores no leídos. |
+| `moderation.reports`: nuevos `CHECK` `ck_reports_target_type`, `ck_reports_reason`, `ck_reports_status` y `ck_reports_details_not_blank` | Refinamiento de restricciones | HU-09, HU-10 | En el Sprint 2 estos dominios solo los controlaba la aplicación (quedó documentado como "sin CHECK"). Ahora la BD rechaza valores fuera de los enums `ReportTargetType`, `ReportReason` y `ReportStatus`. El backend ya convierte los detalles en blanco a `NULL`. |
+| `moderation.reports`: nuevo índice `ix_reports_status_created (status, created_at)` | Refinamiento de índices | HU-10 | La bandeja de moderación filtra por estado y prioriza los reportes más antiguos (consulta 17). Sin este índice se recorre toda la tabla. |
+| `projects.projects`: nuevos `CHECK` `ck_projects_status` y `ck_projects_dates` | Refinamiento de restricciones | HU-04 | `status` no tenía validación en la BD (enum `ProjectStatus`). La regla `updated_at >= created_at` ya existía en `developer_profiles` y se aplica igual a proyectos. |
+| Encabezado del script y comentarios por HU | Documentación | — | Cada bloque indica la migración y la HU que atiende. |
+
+> Los refinamientos (`CHECK` e índice nuevos sobre `reports` y `projects`) **no existen todavía en las migraciones Flyway**. Se proponen al equipo de backend como una migración `V19`. Los valores de los `CHECK` se tomaron de los enums del backend, que los persiste como texto (`@Enumerated(EnumType.STRING)`), por lo que los datos válidos de la aplicación no se ven afectados.
+
 ## 1. Entidades y relaciones
 
 
@@ -429,9 +445,9 @@ Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 | | `title` | varchar(150) | NOT NULL |
 | | `description` | varchar(2000) | NOT NULL |
 | | `technologies` | text[] | NOT NULL |
-| | `status` | varchar(30) | NOT NULL (en desarrollo, finalizado o buscando colaboradores; dominio controlado por la aplicación, sin CHECK) |
+| | `status` | varchar(30) | NOT NULL, CHECK IN ('IN_PROGRESS','COMPLETED','LOOKING_FOR_COLLABORATORS') *(Sprint 3)* |
 | | `repository_url` | varchar(500) | nullable |
-| | `created_at` / `updated_at` | timestamptz | NOT NULL |
+| | `created_at` / `updated_at` | timestamptz | NOT NULL, CHECK updated_at >= created_at *(Sprint 3)* |
 | `posts.posts` | `id` | uuid | PK |
 | | `user_id` | uuid | NOT NULL, FK → `users.app_users(id)` |
 | | `title` | varchar(150) | nullable; obligatorio y no vacío si `type` = `TECHNICAL_DISCUSSION` (CHECK) |
@@ -463,11 +479,11 @@ Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 | | *(tabla)* | | CHECK: exactamente uno entre `project_id` y `post_id`; único parcial por (contenido, usuario, tipo) |
 | `moderation.reports` | `id` | uuid | PK |
 | | `reporter_id` | uuid | NOT NULL, FK → `users.app_users(id)` |
-| | `target_type` | varchar(20) | NOT NULL (`POST`, `COMMENT`, `PROFILE`; dominio controlado por la aplicación, sin CHECK) |
+| | `target_type` | varchar(20) | NOT NULL, CHECK IN ('POST','COMMENT','PROFILE') *(Sprint 3)* |
 | | `target_id` | uuid | NOT NULL, sin FK (referencia polimórfica) |
-| | `reason` | varchar(30) | NOT NULL (`SPAM`, `HARASSMENT`, `INAPPROPRIATE_CONTENT`, `MISINFORMATION`, `OTHER`; controlado por la aplicación) |
-| | `details` | varchar(500) | nullable |
-| | `status` | varchar(20) | NOT NULL (`PENDING`, `RESOLVED`, `DISMISSED`; controlado por la aplicación) |
+| | `reason` | varchar(30) | NOT NULL, CHECK IN ('SPAM','HARASSMENT','INAPPROPRIATE_CONTENT','MISINFORMATION','OTHER') *(Sprint 3)* |
+| | `details` | varchar(500) | nullable, CHECK no vacío si se informa *(Sprint 3)* |
+| | `status` | varchar(20) | NOT NULL, CHECK IN ('PENDING','RESOLVED','DISMISSED') *(Sprint 3)* |
 | | `created_at` | timestamptz | NOT NULL |
 | | *(tabla)* | | único parcial (`reporter_id`, `target_type`, `target_id`) cuando `status` = `PENDING` |
 | `interactions.user_follows` | `id` | uuid | PK |
@@ -475,6 +491,32 @@ Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 | | `followed_id` | uuid | NOT NULL, FK → `users.app_users(id)` ON DELETE CASCADE (a quien se sigue) |
 | | `created_at` | timestamptz | NOT NULL |
 | | *(tabla)* | | CHECK `follower_id <> followed_id`; UNIQUE (`follower_id`, `followed_id`) |
+| `interactions.user_blocks` | `id` | uuid | PK |
+| | `blocker_id` | uuid | NOT NULL, FK → `users.app_users(id)` ON DELETE CASCADE (quien bloquea) |
+| | `blocked_id` | uuid | NOT NULL, FK → `users.app_users(id)` ON DELETE CASCADE (usuario bloqueado) |
+| | `created_at` | timestamptz | NOT NULL |
+| | *(tabla)* | | CHECK `blocker_id <> blocked_id`; UNIQUE (`blocker_id`, `blocked_id`) |
+| `messaging.conversations` | `id` | uuid | PK |
+| | `user_one_id` | uuid | NOT NULL, FK → `users.app_users(id)` ON DELETE CASCADE |
+| | `user_two_id` | uuid | NOT NULL, FK → `users.app_users(id)` ON DELETE CASCADE |
+| | `created_at` | timestamptz | NOT NULL |
+| | `last_message_at` | timestamptz | NOT NULL (fecha del último mensaje) |
+| | *(tabla)* | | CHECK `user_one_id < user_two_id`; UNIQUE (`user_one_id`, `user_two_id`) |
+| `messaging.messages` | `id` | uuid | PK |
+| | `conversation_id` | uuid | NOT NULL, FK → `messaging.conversations(id)` ON DELETE CASCADE |
+| | `sender_id` | uuid | NOT NULL, FK → `users.app_users(id)` ON DELETE CASCADE |
+| | `content` | text | NOT NULL, CHECK no vacío y `char_length(content) <= 2000` |
+| | `created_at` | timestamptz | NOT NULL |
+| `notifications.notifications` | `id` | uuid | PK |
+| | `recipient_id` | uuid | NOT NULL, FK → `users.app_users(id)` ON DELETE CASCADE (destinatario) |
+| | `actor_id` | uuid | NOT NULL, FK → `users.app_users(id)` ON DELETE CASCADE (quien origina) |
+| | `type` | varchar(20) | NOT NULL, CHECK IN ('COMMENT','LIKE','FOLLOWER','MESSAGE') |
+| | `target_type` | varchar(20) | NOT NULL, CHECK IN ('POST','PROJECT','USER') |
+| | `target_id` | uuid | NOT NULL, sin FK (referencia polimórfica) |
+| | `target_label` | varchar(150) | nullable (texto a mostrar) |
+| | `created_at` | timestamptz | NOT NULL |
+| | `read_at` | timestamptz | nullable (`NULL` = no leída) |
+| | *(tabla)* | | CHECK `recipient_id <> actor_id` |
 
 **Índices del Sprint 2**
 
@@ -484,6 +526,21 @@ Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 - `moderation.reports`: `ux_reports_pending_per_reporter` (único parcial, solo `PENDING`) e `ix_reports_target`.
 - `interactions.user_follows`: `ux_user_follows_pair` (único por par seguidor-seguido) e `ix_user_follows_followed` (`followed_id`, `created_at`).
 - `profiles.developer_profiles`: `ix_profiles_moderation_status`.
+
+**Índices del Sprint 3**
+
+- `interactions.user_blocks`: `ux_user_blocks_pair` (único por par bloqueador-bloqueado) e `ix_user_blocks_blocked` (`blocked_id`, `created_at`).
+- `messaging.conversations`: `ux_conversations_pair` (único por par ordenado); `ix_conversations_user_one` e `ix_conversations_user_two` (participante, `last_message_at DESC`).
+- `messaging.messages`: `ix_messages_conversation_created` (`conversation_id`, `created_at DESC`, `id DESC`).
+- `notifications.notifications`: `ix_notifications_recipient_created` (`recipient_id`, `created_at DESC`, `id DESC`); `ix_notifications_recipient_unread` (parcial, `read_at IS NULL`); `ux_notifications_unread_dedupe` (único parcial para `LIKE` y `FOLLOWER` no leídas).
+- `moderation.reports` *(refinamiento)*: `ix_reports_status_created` (`status`, `created_at`).
+
+**Decisiones de diseño del Sprint 3**
+
+- `user_blocks`, `conversations`, `messages` y `notifications` usan `ON DELETE CASCADE` hacia `app_users`: igual que `user_follows`, son datos que solo tienen sentido mientras existen los usuarios implicados.
+- `conversations` existe aunque podría deducirse de los mensajes, porque garantiza una única conversación por pareja (`UNIQUE` sobre el par ordenado) y permite listar la bandeja con `last_message_at` sin agrupar mensajes.
+- `messages` no guarda `recipient_id`: el destinatario es el otro participante de la conversación. Guardarlo sería redundante y podría contradecir a `conversations`.
+- `notifications` guarda `read_at` en lugar de un booleano: además de saber si se leyó, se sabe cuándo. El índice parcial `ix_notifications_recipient_unread` mantiene barato el contador de no leídas.
 
 **Decisiones de diseño en `admin.audit_logs`**
 
@@ -553,11 +610,11 @@ Estas mejoras permitirían consultar y reutilizar los valores de manera más est
 
 ## 4. Modelo físico
 
-El modelo físico se implementa en PostgreSQL y se encuentra definido en [`schema.sql`](./schema.sql). Integra las cinco tablas del Sprint 1 y las cinco tablas incorporadas en el Sprint 2, de acuerdo con las migraciones Flyway V1 a V15 del proyecto principal.
+El modelo físico se implementa en PostgreSQL y se encuentra definido en [`schema.sql`](./schema.sql). Integra las cinco tablas del Sprint 1, las cinco del Sprint 2 y las cuatro del Sprint 3, de acuerdo con las migraciones Flyway V1 a V18 del proyecto principal, más los refinamientos de restricciones del Sprint 3.
 
 ### Estructura de la base de datos
 
-El modelo contiene diez tablas distribuidas en ocho schemas:
+El modelo contiene catorce tablas distribuidas en diez schemas:
 
 | Schema | Tabla | Propósito |
 |---|---|---|
@@ -571,6 +628,10 @@ El modelo contiene diez tablas distribuidas en ocho schemas:
 | `interactions` | `reactions` | Reacciones sobre proyectos y publicaciones. |
 | `interactions` | `user_follows` | Relaciones de seguimiento entre usuarios. |
 | `moderation` | `reports` | Reportes de contenido para moderación. |
+| `interactions` | `user_blocks` | Bloqueos entre usuarios (Sprint 3). |
+| `messaging` | `conversations` | Conversaciones privadas, una por par de usuarios (Sprint 3). |
+| `messaging` | `messages` | Mensajes de cada conversación (Sprint 3). |
+| `notifications` | `notifications` | Notificaciones in-app (Sprint 3). |
 
 ### Tipos de datos y restricciones
 
@@ -597,6 +658,9 @@ El modelo define índices para apoyar las consultas frecuentes y las restriccion
 - Índices por estado de moderación en publicaciones, comentarios y perfiles.
 - Índice para consultar los seguidores de un usuario por fecha.
 - Índices para localizar reportes por contenido y evitar reportes pendientes duplicados del mismo usuario para el mismo objetivo.
+- Índice por estado y fecha de los reportes para la bandeja de moderación (Sprint 3).
+- Índices para listar las conversaciones de un usuario por actividad y el historial de mensajes de una conversación (Sprint 3).
+- Índices parciales para contar notificaciones no leídas y evitar notificaciones duplicadas (Sprint 3).
 
 La existencia de un índice no reemplaza la validación de integridad mediante restricciones. Los índices y las restricciones descritos deben coincidir con la definición real de `schema.sql`.
 
@@ -614,7 +678,7 @@ También se puede ejecutar desde el SQL Editor de Supabase sobre una base de dat
 
 ## 5. Trazabilidad con el backend
 
-Este esquema corresponde 1 a 1 con las migraciones Flyway del repositorio
+Este esquema corresponde con las migraciones Flyway del repositorio
 principal (`backend/src/main/resources/db/migration`):
 
 | Migración | Contenido |
@@ -633,8 +697,15 @@ principal (`backend/src/main/resources/db/migration`):
 | `V13__add_moderation_status.sql` | Columna `moderation_status` (con CHECK e índice) en `posts.posts`, `interactions.comments` y `profiles.developer_profiles`. |
 | `V14__allow_nested_comment_replies.sql` | Eliminación de `parent_must_be_root` y de la FK compuesta del padre; nueva FK simple `fk_comments_parent`. |
 | `V15__create_user_follows.sql` | Creación de `interactions.user_follows`. |
+| `V16__create_user_blocks.sql` | Creación de `interactions.user_blocks` (HU-11). |
+| `V17__create_messaging.sql` | Creación del schema `messaging` y de `conversations` y `messages` (HU-12). |
+| `V18__create_notifications.sql` | Creación del schema `notifications` y de `notifications.notifications` (HU-13). |
 
-`schema.sql` consolida el estado final del modelo después de aplicar las migraciones `V1` a `V15`. Reproduce directamente la estructura definitiva de los esquemas y tablas, incluyendo las funcionalidades de publicaciones, interacciones y reportes incorporadas en las migraciones posteriores. Por eso, el script permite crear la estructura final en una base de datos vacía sin ejecutar las migraciones una por una. Para comprobarlo, se aplicaron las migraciones `V1` a `V15` sobre una base PostgreSQL 16 vacía y se ejecutó `schema.sql` sobre otra; al comparar columnas, tipos, valores por defecto, restricciones e índices de ambas (175 objetos), no se encontró ninguna diferencia.
+`schema.sql` consolida el estado final del modelo después de aplicar las migraciones `V1` a `V18`. Reproduce directamente la estructura definitiva de los esquemas y tablas, incluyendo las funcionalidades de publicaciones, interacciones y reportes incorporadas en las migraciones posteriores. Por eso, el script permite crear la estructura final en una base de datos vacía sin ejecutar las migraciones una por una. Para comprobarlo, se aplicaron las migraciones `V1` a `V15` sobre una base PostgreSQL 16 vacía y se ejecutó `schema.sql` sobre otra; al comparar columnas, tipos, valores por defecto, restricciones e índices de ambas (175 objetos), no se encontró ninguna diferencia.
+
+**Sprint 3.** El script incluye V16 a V18 y, además, los refinamientos de restricciones descritos en [Cambios respecto al Sprint 2](#script-schemasql): `CHECK` sobre `projects.status`, `projects.updated_at`, `reports.target_type`, `reports.reason`, `reports.status` y `reports.details`, y el índice `ix_reports_status_created`. Estos objetos son las únicas diferencias intencionales frente a las migraciones y se proponen al backend como migración `V19`.
+
+Verificación del Sprint 3 (PostgreSQL 18): se aplicaron las migraciones `V1` a `V18` (omitiendo `V4`, reemplazada por `V5`) sobre una base vacía y se ejecutaron `schema.sql` y `security.sql` sobre otra, sin errores. La comparación de columnas, restricciones e índices (318 objetos frente a 325) muestra solo las 7 diferencias intencionales: los 6 `CHECK` y el índice de refinamiento. Además, se comprobó que los valores válidos de los enums del backend se aceptan, que los valores fuera de dominio se rechazan con la restricción esperada y que `queries.sql` se ejecuta sin errores sobre el esquema refinado.
 
 ## 6. Seguridad y privilegios de la base de datos
 

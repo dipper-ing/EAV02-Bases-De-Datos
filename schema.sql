@@ -1,3 +1,10 @@
+-- ============================================================
+-- DevConnect - Fábrica Escuela 2026-2
+-- Modelo físico consolidado (Sprints 1, 2 y 3)
+-- Estado equivalente a las migraciones Flyway V1 a V18, más los
+-- refinamientos del Sprint 3 marcados con "Sprint 3 (refinamiento)".
+-- Ejecutar sobre una base de datos PostgreSQL/Supabase vacía.
+-- ============================================================
 
 -- Schemas por dominio: un schema por módulo del backend.
 -- En public solo permanece flyway_schema_history (control de migraciones).
@@ -9,6 +16,9 @@ CREATE SCHEMA IF NOT EXISTS projects;
 CREATE SCHEMA IF NOT EXISTS posts;
 CREATE SCHEMA IF NOT EXISTS interactions;
 CREATE SCHEMA IF NOT EXISTS moderation;
+-- Sprint 3 (V17, V18): mensajería privada y notificaciones.
+CREATE SCHEMA IF NOT EXISTS messaging;
+CREATE SCHEMA IF NOT EXISTS notifications;
 
 
 -- Se crea la tabla de usuarios de la plataforma.
@@ -90,7 +100,15 @@ CREATE TABLE projects.projects (
     status varchar(30) NOT NULL,
     repository_url varchar(500),
     created_at timestamptz NOT NULL,
-    updated_at timestamptz NOT NULL
+    updated_at timestamptz NOT NULL,
+
+    -- Sprint 3 (refinamiento): el dominio de status se valida en la BD
+    -- con los valores del enum ProjectStatus del backend.
+    CONSTRAINT ck_projects_status
+        CHECK (status IN ('IN_PROGRESS', 'COMPLETED', 'LOOKING_FOR_COLLABORATORS')),
+
+    -- Sprint 3 (refinamiento): misma regla de fechas que developer_profiles.
+    CONSTRAINT ck_projects_dates CHECK (updated_at >= created_at)
 );
 
 CREATE INDEX ix_projects_user_id ON projects.projects (user_id);
@@ -284,7 +302,22 @@ CREATE TABLE moderation.reports (
     reason varchar(30) NOT NULL,
     details varchar(500),
     status varchar(20) NOT NULL,
-    created_at timestamptz NOT NULL
+    created_at timestamptz NOT NULL,
+
+    -- Sprint 3 (refinamiento): los dominios de target_type, reason y status
+    -- se validan en la BD con los valores de los enums ReportTargetType,
+    -- ReportReason y ReportStatus del backend.
+    CONSTRAINT ck_reports_target_type
+        CHECK (target_type IN ('POST', 'COMMENT', 'PROFILE')),
+
+    CONSTRAINT ck_reports_reason
+        CHECK (reason IN ('SPAM', 'HARASSMENT', 'INAPPROPRIATE_CONTENT', 'MISINFORMATION', 'OTHER')),
+
+    CONSTRAINT ck_reports_status
+        CHECK (status IN ('PENDING', 'RESOLVED', 'DISMISSED')),
+
+    CONSTRAINT ck_reports_details_not_blank
+        CHECK (details IS NULL OR details ~ '[^[:space:]]')
 );
 
 -- Evita que un usuario tenga reportes pendientes duplicados
@@ -296,3 +329,112 @@ CREATE UNIQUE INDEX ux_reports_pending_per_reporter
 -- Facilita localizar reportes asociados a un contenido.
 CREATE INDEX ix_reports_target
     ON moderation.reports (target_type, target_id);
+
+-- Sprint 3 (refinamiento): apoya la bandeja de moderación (HU-10), que
+-- filtra por estado y prioriza los reportes más antiguos (consulta 17).
+CREATE INDEX ix_reports_status_created
+    ON moderation.reports (status, created_at);
+
+
+-- ============================================================
+-- SPRINT 3
+-- ============================================================
+
+-- HU-11 (V16): bloqueos entre usuarios.
+-- El bloqueo es dirigido (blocker -> blocked); sus efectos se aplican
+-- en ambos sentidos (mensajes y seguimiento).
+CREATE TABLE interactions.user_blocks (
+    id uuid PRIMARY KEY,
+    blocker_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    blocked_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL,
+
+    CONSTRAINT ck_user_blocks_not_self CHECK (blocker_id <> blocked_id),
+    CONSTRAINT ux_user_blocks_pair UNIQUE (blocker_id, blocked_id)
+);
+
+-- La UNIQUE (blocker_id, blocked_id) ya indexa las búsquedas por bloqueador;
+-- este índice cubre las búsquedas por usuario bloqueado.
+CREATE INDEX ix_user_blocks_blocked
+    ON interactions.user_blocks (blocked_id, created_at);
+
+
+-- HU-12 (V17): conversaciones privadas uno a uno.
+-- Una conversación por par de usuarios: el par se guarda ordenado
+-- (user_one_id < user_two_id) para que (A, B) y (B, A) sean la misma fila.
+CREATE TABLE messaging.conversations (
+    id uuid PRIMARY KEY,
+    user_one_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    user_two_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL,
+    last_message_at timestamptz NOT NULL,
+
+    CONSTRAINT ck_conversations_ordered_pair CHECK (user_one_id < user_two_id),
+    CONSTRAINT ux_conversations_pair UNIQUE (user_one_id, user_two_id)
+);
+
+-- Bandeja de conversaciones de un usuario, ordenada por actividad,
+-- sin importar en qué posición del par se encuentre.
+CREATE INDEX ix_conversations_user_one
+    ON messaging.conversations (user_one_id, last_message_at DESC);
+
+CREATE INDEX ix_conversations_user_two
+    ON messaging.conversations (user_two_id, last_message_at DESC);
+
+
+-- HU-12 (V17): mensajes de una conversación.
+-- El destinatario no se almacena: es el otro participante de la conversación.
+CREATE TABLE messaging.messages (
+    id uuid PRIMARY KEY,
+    conversation_id uuid NOT NULL REFERENCES messaging.conversations(id) ON DELETE CASCADE,
+    sender_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    content text NOT NULL,
+    created_at timestamptz NOT NULL,
+
+    CONSTRAINT ck_messages_content_not_blank CHECK (content ~ '[^[:space:]]'),
+    CONSTRAINT ck_messages_content_length CHECK (char_length(content) <= 2000)
+);
+
+-- Historial paginado de una conversación (más recientes primero).
+CREATE INDEX ix_messages_conversation_created
+    ON messaging.messages (conversation_id, created_at DESC, id DESC);
+
+
+-- HU-13 (V18): notificaciones in-app.
+-- target_type + target_id es una referencia polimórfica (sin FK).
+-- read_at NULL significa "no leída".
+CREATE TABLE notifications.notifications (
+    id uuid PRIMARY KEY,
+    recipient_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    actor_id uuid NOT NULL REFERENCES users.app_users(id) ON DELETE CASCADE,
+    type varchar(20) NOT NULL,
+    target_type varchar(20) NOT NULL,
+    target_id uuid NOT NULL,
+    target_label varchar(150),
+    created_at timestamptz NOT NULL,
+    read_at timestamptz,
+
+    CONSTRAINT ck_notifications_type
+        CHECK (type IN ('COMMENT', 'LIKE', 'FOLLOWER', 'MESSAGE')),
+
+    CONSTRAINT ck_notifications_target_type
+        CHECK (target_type IN ('POST', 'PROJECT', 'USER')),
+
+    CONSTRAINT ck_notifications_not_self
+        CHECK (recipient_id <> actor_id)
+);
+
+-- Listado paginado de notificaciones de un usuario.
+CREATE INDEX ix_notifications_recipient_created
+    ON notifications.notifications (recipient_id, created_at DESC, id DESC);
+
+-- Contador de no leídas: índice parcial, solo filas con read_at NULL.
+CREATE INDEX ix_notifications_recipient_unread
+    ON notifications.notifications (recipient_id)
+    WHERE read_at IS NULL;
+
+-- Un "me gusta" o un seguidor sin leer no se duplica aunque el usuario
+-- repita la acción.
+CREATE UNIQUE INDEX ux_notifications_unread_dedupe
+    ON notifications.notifications (recipient_id, actor_id, type, target_type, target_id)
+    WHERE read_at IS NULL AND type IN ('LIKE', 'FOLLOWER');
