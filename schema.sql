@@ -622,3 +622,249 @@ CREATE TRIGGER trg_projects_set_updated_at
     BEFORE UPDATE ON projects.projects
     FOR EACH ROW
     EXECUTE FUNCTION public.fn_set_updated_at();
+
+
+-- ============================================================
+-- PROCEDIMIENTOS Y FUNCIONES ALMACENADAS (Sprint 3)
+-- Implementan en la base de datos la lógica de las HU del sprint.
+-- Se invocan con SELECT (devuelven un resultado) y se ejecutan con
+-- los privilegios de quien las llama (SECURITY INVOKER): el rol de
+-- la aplicación solo necesita EXECUTE y los permisos de tabla que
+-- ya tiene (ver security.sql). Los triggers T1 a T5 siguen
+-- aplicando las validaciones de bloqueo y de participantes.
+-- ============================================================
+
+-- PR1 · HU-11 · Bloquear usuario.
+-- Parámetros: p_blocker (quien bloquea), p_blocked (quien es bloqueado).
+-- Resultado: id del bloqueo. Si ya existía, devuelve el existente
+-- (la operación es idempotente). El trigger T4 elimina los seguimientos
+-- entre ambos usuarios.
+CREATE OR REPLACE FUNCTION interactions.block_user(p_blocker uuid, p_blocked uuid)
+RETURNS uuid
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_id uuid;
+BEGIN
+    IF p_blocker = p_blocked THEN
+        RAISE EXCEPTION 'Un usuario no puede bloquearse a sí mismo'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    INSERT INTO interactions.user_blocks (id, blocker_id, blocked_id, created_at)
+    VALUES (gen_random_uuid(), p_blocker, p_blocked, now())
+    ON CONFLICT (blocker_id, blocked_id) DO NOTHING
+    RETURNING id INTO v_id;
+
+    IF v_id IS NULL THEN
+        SELECT b.id
+          INTO v_id
+          FROM interactions.user_blocks b
+         WHERE b.blocker_id = p_blocker
+           AND b.blocked_id = p_blocked;
+    END IF;
+
+    RETURN v_id;
+END;
+$$;
+
+-- PR2 · HU-11 · Desbloquear usuario.
+-- Parámetros: p_blocker, p_blocked.
+-- Resultado: TRUE si el bloqueo existía y se eliminó; FALSE si no existía.
+CREATE OR REPLACE FUNCTION interactions.unblock_user(p_blocker uuid, p_blocked uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    DELETE FROM interactions.user_blocks b
+     WHERE b.blocker_id = p_blocker
+       AND b.blocked_id = p_blocked;
+
+    RETURN FOUND;
+END;
+$$;
+
+-- PR3 · HU-12 · Enviar mensaje privado.
+-- Parámetros: p_sender, p_recipient, p_content (máximo 2000 caracteres).
+-- Resultado: id del mensaje creado. Crea la conversación del par si no
+-- existe. Los triggers T1 y T2 rechazan el envío si el remitente no
+-- participa o si hay un bloqueo entre ambos; T3 actualiza la actividad.
+CREATE OR REPLACE FUNCTION messaging.send_message(p_sender uuid, p_recipient uuid, p_content text)
+RETURNS uuid
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_one uuid := LEAST(p_sender, p_recipient);
+    v_two uuid := GREATEST(p_sender, p_recipient);
+    v_conversation uuid;
+    v_message uuid := gen_random_uuid();
+BEGIN
+    IF p_sender = p_recipient THEN
+        RAISE EXCEPTION 'No puede enviarse mensajes a sí mismo'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    INSERT INTO messaging.conversations (id, user_one_id, user_two_id, created_at, last_message_at)
+    VALUES (gen_random_uuid(), v_one, v_two, now(), now())
+    ON CONFLICT (user_one_id, user_two_id) DO NOTHING;
+
+    SELECT c.id
+      INTO v_conversation
+      FROM messaging.conversations c
+     WHERE c.user_one_id = v_one
+       AND c.user_two_id = v_two;
+
+    INSERT INTO messaging.messages (id, conversation_id, sender_id, content, created_at)
+    VALUES (v_message, v_conversation, p_sender, p_content, now());
+
+    RETURN v_message;
+END;
+$$;
+
+-- PR4 · HU-12 · Historial de una conversación.
+-- Parámetros: p_user, p_other, p_limit (por defecto, 50 mensajes).
+-- Resultado: los últimos p_limit mensajes de la conversación entre ambos
+-- usuarios, en orden cronológico (del más antiguo al más reciente).
+CREATE OR REPLACE FUNCTION messaging.get_conversation(
+    p_user uuid,
+    p_other uuid,
+    p_limit integer DEFAULT 50
+)
+RETURNS TABLE (message_id uuid, sender_id uuid, content text, created_at timestamptz)
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT m.id, m.sender_id, m.content, m.created_at
+      FROM (
+            SELECT msg.id, msg.sender_id, msg.content, msg.created_at
+              FROM messaging.messages msg
+              JOIN messaging.conversations c ON c.id = msg.conversation_id
+             WHERE c.user_one_id = LEAST(p_user, p_other)
+               AND c.user_two_id = GREATEST(p_user, p_other)
+             ORDER BY msg.created_at DESC, msg.id DESC
+             LIMIT p_limit
+           ) m
+     ORDER BY m.created_at ASC, m.id ASC;
+$$;
+
+-- PR5 · HU-13 · Contador de notificaciones sin leer.
+-- Parámetros: p_user.
+-- Resultado: cantidad de notificaciones del usuario con read_at NULL.
+CREATE OR REPLACE FUNCTION notifications.count_unread(p_user uuid)
+RETURNS integer
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT count(*)::integer
+      FROM notifications.notifications n
+     WHERE n.recipient_id = p_user
+       AND n.read_at IS NULL;
+$$;
+
+-- PR6 · HU-13 · Marcar notificaciones como leídas.
+-- Parámetros: p_user.
+-- Resultado: cantidad de notificaciones que pasaron de no leídas a leídas;
+-- después de la llamada, el contador de no leídas queda en cero.
+CREATE OR REPLACE FUNCTION notifications.mark_notifications_read(p_user uuid)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_count integer;
+BEGIN
+    UPDATE notifications.notifications n
+       SET read_at = now()
+     WHERE n.recipient_id = p_user
+       AND n.read_at IS NULL;
+
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RETURN v_count;
+END;
+$$;
+
+-- PR7 · HU-14 · Estadísticas de crecimiento y actividad.
+-- Parámetros: p_from y p_to (rango de fechas, ambos incluidos) y
+-- p_period ('week' o 'month', por defecto 'month').
+-- Resultado: una fila por periodo del rango, con los usuarios registrados,
+-- los proyectos publicados, las discusiones técnicas creadas y los
+-- comentarios escritos en ese periodo (0 si no hubo actividad). Los
+-- periodos se calculan en la zona horaria de la sesión.
+CREATE OR REPLACE FUNCTION admin.get_growth_stats(
+    p_from date,
+    p_to date,
+    p_period text DEFAULT 'month'
+)
+RETURNS TABLE (
+    period_start date,
+    new_users bigint,
+    new_projects bigint,
+    new_discussions bigint,
+    new_comments bigint
+)
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_t0 timestamptz;
+    v_t1 timestamptz;
+BEGIN
+    IF p_period IS NULL OR p_period NOT IN ('week', 'month') THEN
+        RAISE EXCEPTION 'Periodo no válido: % (use week o month)', p_period
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    IF p_from IS NULL OR p_to IS NULL OR p_from > p_to THEN
+        RAISE EXCEPTION 'Rango de fechas no válido'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    v_t0 := p_from::timestamptz;
+    v_t1 := (p_to + 1)::timestamptz;
+
+    RETURN QUERY
+    WITH periods AS (
+        SELECT g AS ps
+          FROM generate_series(
+                   date_trunc(p_period, v_t0),
+                   date_trunc(p_period, v_t1 - interval '1 second'),
+                   ('1 ' || p_period)::interval
+               ) AS g
+    ),
+    u AS (
+        SELECT date_trunc(p_period, x.created_at) AS ps, count(*) AS n
+          FROM users.app_users x
+         WHERE x.created_at >= v_t0 AND x.created_at < v_t1
+         GROUP BY 1
+    ),
+    pr AS (
+        SELECT date_trunc(p_period, x.created_at) AS ps, count(*) AS n
+          FROM projects.projects x
+         WHERE x.created_at >= v_t0 AND x.created_at < v_t1
+         GROUP BY 1
+    ),
+    d AS (
+        SELECT date_trunc(p_period, x.created_at) AS ps, count(*) AS n
+          FROM posts.posts x
+         WHERE x.type = 'TECHNICAL_DISCUSSION'
+           AND x.created_at >= v_t0 AND x.created_at < v_t1
+         GROUP BY 1
+    ),
+    c AS (
+        SELECT date_trunc(p_period, x.created_at) AS ps, count(*) AS n
+          FROM interactions.comments x
+         WHERE x.created_at >= v_t0 AND x.created_at < v_t1
+         GROUP BY 1
+    )
+    SELECT pe.ps::date,
+           COALESCE(u.n, 0),
+           COALESCE(pr.n, 0),
+           COALESCE(d.n, 0),
+           COALESCE(c.n, 0)
+      FROM periods pe
+      LEFT JOIN u ON u.ps = pe.ps
+      LEFT JOIN pr ON pr.ps = pe.ps
+      LEFT JOIN d ON d.ps = pe.ps
+      LEFT JOIN c ON c.ps = pe.ps
+     ORDER BY pe.ps;
+END;
+$$;
