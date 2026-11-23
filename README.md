@@ -9,7 +9,8 @@ Repositorio del proyecto: [EAV02-Fabrica-Escuela](https://github.com/TheMax1270/
 ## Contenido de este repositorio
 
 - [`schema.sql`](./schema.sql): script DDL con el modelo físico final, preparado para PostgreSQL.
-- [`queries.sql`](./queries.sql): consultas SQL para responder las preguntas de negocio de los sprints 1 y 2.
+- [`queries.sql`](./queries.sql): consultas SQL para responder las preguntas de negocio de los sprints 1, 2 y 3.
+- [`security.sql`](./security.sql): roles, privilegios por tabla, `EXECUTE` sobre funciones y Row Level Security.
 - [`docs/modelo-entidad-relacion.md`](./docs/modelo-entidad-relacion.md): diagrama entidad-relación con las catorce entidades, sus atributos identificadores y las cardinalidades principales.
 - [`README.md`](./README.md): documentación general del proyecto, instrucciones de ejecución y descripción de los entregables.
 - [`docs/analisis-almacenamiento.md`](./docs/analisis-almacenamiento.md): estimaciones de almacenamiento, organización de índices, análisis de costos de consultas y optimización mediante álgebra relacional.
@@ -130,6 +131,40 @@ Esta sección resume lo nuevo o modificado en el Sprint 3 frente a la entrega de
 | Función genérica `public.fn_set_updated_at()` y triggers T6 sobre `developer_profiles` y `projects` | Función y triggers nuevos | HU-03, HU-04 | Mantienen `updated_at` cuando el contenido cambia y la aplicación no lo actualizó. |
 
 En el Sprint 2 el esquema no tenía triggers: todas estas reglas existían solo en el backend. Llevarlas a la base de datos garantiza que se cumplan aunque los datos se modifiquen fuera de la aplicación (scripts, SQL Editor de Supabase, otros servicios). El detalle está en la [sección 9](#9-triggers).
+
+### Procedimientos y funciones
+
+| Cambio | Tipo | HU | Justificación |
+|---|---|---|---|
+| `interactions.block_user(p_blocker, p_blocked)` y `interactions.unblock_user(p_blocker, p_blocked)` | Funciones nuevas | HU-11 | Encapsulan bloquear (idempotente: si el bloqueo existe devuelve el mismo id) y desbloquear. El efecto sobre los seguimientos lo aplica el trigger T4. |
+| `messaging.send_message(p_sender, p_recipient, p_content)` | Función nueva | HU-12 | Resuelve en una sola llamada la conversación del par (la crea si no existe, con el par ordenado) y el `INSERT` del mensaje. Las validaciones de participante y de bloqueo las aplican los triggers T1 y T2. |
+| `messaging.get_conversation(p_user, p_other, p_limit)` | Función nueva | HU-12 | Devuelve el historial en orden cronológico, como exige la HU, sin que el cliente tenga que ordenar el par de usuarios. |
+| `notifications.count_unread(p_user)` y `notifications.mark_notifications_read(p_user)` | Funciones nuevas | HU-13 | Contador de no leídas y "marcar como leídas" (el contador queda en cero). No crean notificaciones: las crea el backend. |
+| `admin.get_growth_stats(p_from, p_to, p_period)` | Función nueva | HU-14 | Estadísticas por semana o mes sin agregar tablas: calcula sobre `created_at` de las tablas existentes y rellena con 0 los periodos sin actividad. |
+
+Son funciones de PostgreSQL (`SECURITY INVOKER`) que se invocan con `SELECT` porque devuelven un resultado. Cada una está documentada, con su ejemplo de llamada y sus pruebas, en la [sección 10](#10-procedimientos-y-funciones).
+
+### Consultas
+
+| Cambio | Tipo | HU | Justificación |
+|---|---|---|---|
+| Consultas 1 a 20 | Sin cambios (ejecutadas sobre el esquema refinado) | Sprints 1 y 2 | Los refinamientos del Sprint 3 (`CHECK` e índices nuevos) no modifican las tablas ni las columnas que usan estas consultas. Se volvieron a ejecutar todas sobre el `schema.sql` refinado, sin errores. |
+| Consultas 21 a 23 | Consultas nuevas | HU-11 | Bloqueos de un usuario, usuarios más bloqueados (señal para moderación) y comprobación de bloqueo entre dos usuarios con `fn_users_blocked`. |
+| Consultas 24 a 26 | Consultas nuevas | HU-12 | Bandeja de conversaciones con el último mensaje, historial cronológico y mensajes enviados por usuario. |
+| Consultas 27 a 29 | Consultas nuevas | HU-13 | No leídas por usuario, notificaciones recientes con su origen y actividad por tipo. |
+| Consultas 30 y 31 | Consultas nuevas | HU-14 | Usuarios nuevos por mes y estadísticas completas por semana o mes con `get_growth_stats`. |
+
+### Roles y seguridad
+
+| Cambio | Tipo | HU | Justificación |
+|---|---|---|---|
+| `USAGE` sobre `messaging` y `notifications` solo para `db_readonly` y `app_runtime` | Privilegio nuevo | HU-12, HU-13 | El moderador no necesita leer mensajes ni notificaciones privadas (mínimo privilegio). |
+| `db_readonly`: `SELECT` en las tablas nuevas, con `messaging.messages` limitado a las columnas sin `content` | Privilegio nuevo | HU-11, HU-12, HU-13 | Los reportes pueden usar metadatos (quién escribe, cuándo), pero el texto de un mensaje privado no debe leerse con el rol de consulta. |
+| `app_runtime`: privilegios por tabla en las tablas nuevas (sin `UPDATE` ni `DELETE` en `messages`; `UPDATE` solo en `conversations.last_message_at` y `notifications.read_at`) | Privilegio nuevo | HU-11, HU-12, HU-13 | Los mensajes no se editan ni se eliminan; solo se cambian las columnas que las HU modifican. `INSERT` en `notifications` porque el backend las crea. |
+| `EXECUTE` revocado a `PUBLIC` y concedido por función: las siete funciones de las HU a `app_runtime`, `get_growth_stats` también a `db_readonly`, y `fn_users_blocked` a `app_runtime` | Privilegio nuevo | HU-11 a HU-14 | Por defecto PostgreSQL concede `EXECUTE` a todos. `fn_users_blocked` la llaman los triggers T2 y T5 con los privilegios de quien escribe, por lo que `app_runtime` la necesita (se comprobó que sin ese permiso el `INSERT` falla). |
+| `ALTER DEFAULT PRIVILEGES ... REVOKE EXECUTE ... FROM PUBLIC` en los schemas con funciones | Privilegio nuevo | — | Las funciones que se creen después nacen sin `EXECUTE` para `PUBLIC`. |
+| Row Level Security activado en `user_blocks`, `conversations`, `messages` y `notifications`, con políticas para `app_runtime` y `db_readonly` | Seguridad nueva | HU-11, HU-12, HU-13 | Protección por defecto: sin política, cualquier otro rol (por ejemplo `anon` o `authenticated` de Supabase) no ve estas tablas. El detalle está en la sección 6.3. |
+| Triggers y funciones sin `EXECUTE` para los roles | Decisión documentada | — | PostgreSQL solo comprueba `EXECUTE` sobre la función de un trigger al crearlo, no al dispararlo. |
 
 ## 1. Entidades y relaciones
 
@@ -414,6 +449,26 @@ erDiagram
 19. (HU-08) ¿Quiénes siguen a un usuario específico y desde cuándo?
 20. (HU-10) ¿Cuánto contenido (publicaciones, comentarios y perfiles) está en
     revisión o removido?
+
+### Preguntas relacionadas al sprint 3
+
+21. (HU-11) ¿A quiénes ha bloqueado un usuario y desde cuándo?
+22. (HU-11) ¿Qué usuarios han sido bloqueados por más personas?
+23. (HU-11) ¿Existe un bloqueo, en cualquier sentido, entre dos usuarios?
+24. (HU-12) ¿Cuáles son las conversaciones de un usuario, ordenadas por
+    actividad, con el otro participante y el último mensaje?
+25. (HU-12) ¿Cuál es el historial de mensajes entre dos usuarios, en orden
+    cronológico?
+26. (HU-12) ¿Cuántos mensajes ha enviado cada usuario y cuándo envió el último?
+27. (HU-13) ¿Cuántas notificaciones sin leer tiene cada usuario?
+28. (HU-13) ¿Cuáles son las notificaciones más recientes de un usuario y quién
+    las originó?
+29. (HU-13) ¿Qué tipo de notificación genera más actividad y cuántas siguen sin
+    leer?
+30. (HU-14) ¿Cuántos usuarios nuevos se registraron por mes en un rango de
+    fechas?
+31. (HU-14) ¿Cuántos usuarios, proyectos, discusiones y comentarios hubo por
+    periodo (semana o mes)?
 
 Las consultas SQL que resuelven cada pregunta están en la sección 7 y en
 [`queries.sql`](./queries.sql).
@@ -727,21 +782,23 @@ Los triggers y funciones de la [sección 9](#9-triggers) tampoco existen en las 
 
 Se definió una estrategia de control de acceso basada en roles de PostgreSQL, aplicando el principio de mínimo privilegio. El objetivo es asignar a cada rol únicamente los permisos necesarios para sus responsabilidades, evitando modificaciones no autorizadas sobre los datos y los registros de auditoría.
 
+En el Sprint 3 la configuración se amplió para cubrir los objetos nuevos: las cuatro tablas de bloqueos, mensajería y notificaciones, las siete funciones de las HU (con `EXECUTE` otorgado función por función) y Row Level Security en las tablas nuevas. Los cambios están resumidos en [Cambios respecto al Sprint 2](#roles-y-seguridad).
+
 La configuración se encuentra en el archivo `security.sql`, el cual se ejecutó y validó en una instancia local de PostgreSQL mediante Docker. Esta configuración corresponde a una propuesta de permisos para la base de datos; su integración con el backend deberá coordinarse con el equipo responsable de dicha capa.
 
 ### 6.2. Roles definidos
 
 | Rol | Tipo de acceso | Permisos principales |
 |---|---|---|
-| `db_readonly` | Solo lectura | Consultar nueve tablas (todas menos `auth_sessions`) y `app_users` sin la columna `password_hash`. |
-| `app_runtime` | Operación de la aplicación | Consultar y gestionar datos operativos según los permisos asignados. Puede registrar reportes y consultar auditoría, pero no actualizar ni eliminar reportes, ni modificar o eliminar registros de auditoría. Puede crear y eliminar relaciones de seguimiento. |
-| `app_moderator` | Moderación | Consultar el contenido (publicaciones, comentarios y perfiles) y cambiar únicamente su `moderation_status`; consultar reportes y cambiar únicamente su `status`; consultar y registrar auditoría. No puede eliminar contenido ni reportes. |
+| `db_readonly` | Solo lectura | Consultar trece tablas (todas menos `auth_sessions`), con `app_users` sin la columna `password_hash` y `messages` sin la columna `content`. Puede ejecutar las estadísticas (`admin.get_growth_stats`). |
+| `app_runtime` | Operación de la aplicación | Consultar y gestionar datos operativos según los permisos asignados. Puede registrar reportes y consultar auditoría, pero no actualizar ni eliminar reportes, ni modificar o eliminar registros de auditoría. Puede crear y eliminar relaciones de seguimiento y bloqueos, enviar y leer mensajes, crear notificaciones y marcarlas como leídas, y ejecutar las funciones de las HU-11 a HU-14. |
+| `app_moderator` | Moderación | Consultar el contenido (publicaciones, comentarios y perfiles) y cambiar únicamente su `moderation_status`; consultar reportes y cambiar únicamente su `status`; consultar y registrar auditoría. No puede eliminar contenido ni reportes y no tiene acceso a mensajes, notificaciones ni bloqueos. |
 
 Los tres roles se crearon con el atributo `NOLOGIN`, por lo que funcionan como roles de privilegios y no como cuentas de conexión. Las credenciales y la asignación de estos permisos a la conexión de la aplicación deben definirse con el equipo de backend.
 
 ### 6.3. Asignación de permisos
 
-El script `security.sql` utiliza instrucciones `GRANT` para asignar permisos y `REVOKE` para retirar los privilegios de tablas concedidos al rol `PUBLIC` en los ocho esquemas de negocio.
+El script `security.sql` utiliza instrucciones `GRANT` para asignar permisos y `REVOKE` para retirar los privilegios de tablas concedidos al rol `PUBLIC` en los diez esquemas de negocio, y retira `EXECUTE` sobre las funciones.
 **Matriz de privilegios (rol × tabla)**
 
 | Tabla | `db_readonly` | `app_runtime` | `app_moderator` |
@@ -754,8 +811,39 @@ El script `security.sql` utiliza instrucciones `GRANT` para asignar permisos y `
 | `interactions.comments` | SELECT | SELECT, INSERT, UPDATE, DELETE | SELECT; UPDATE solo en `moderation_status` |
 | `interactions.reactions` | SELECT | SELECT, INSERT, UPDATE, DELETE | — |
 | `interactions.user_follows` | SELECT | SELECT, INSERT, DELETE | — |
+| `interactions.user_blocks` | SELECT | SELECT, INSERT, DELETE | — |
+| `messaging.conversations` | SELECT | SELECT, INSERT; UPDATE solo en `last_message_at` | — |
+| `messaging.messages` | SELECT (sin `content`) | SELECT, INSERT | — |
+| `notifications.notifications` | SELECT | SELECT, INSERT; UPDATE solo en `read_at` | — |
 | `moderation.reports` | SELECT | SELECT, INSERT | SELECT; UPDATE solo en `status` |
 | `admin.audit_logs` | SELECT | SELECT, INSERT | SELECT, INSERT |
+
+**Matriz de `EXECUTE` (rol × función)**
+
+| Función | HU | `db_readonly` | `app_runtime` | `app_moderator` |
+|---|---|---|---|---|
+| `interactions.block_user(uuid, uuid)` | HU-11 | — | EXECUTE | — |
+| `interactions.unblock_user(uuid, uuid)` | HU-11 | — | EXECUTE | — |
+| `messaging.send_message(uuid, uuid, text)` | HU-12 | — | EXECUTE | — |
+| `messaging.get_conversation(uuid, uuid, integer)` | HU-12 | — | EXECUTE | — |
+| `notifications.count_unread(uuid)` | HU-13 | — | EXECUTE | — |
+| `notifications.mark_notifications_read(uuid)` | HU-13 | — | EXECUTE | — |
+| `admin.get_growth_stats(date, date, text)` | HU-14 | EXECUTE | EXECUTE | — |
+| `interactions.fn_users_blocked(uuid, uuid)` (auxiliar de T2 y T5) | HU-11 | — | EXECUTE | — |
+| Funciones de trigger (`fn_messages_*`, `fn_user_*`, `fn_set_updated_at`) | HU-03, HU-04, HU-11, HU-12 | — | — | — |
+
+Las funciones de trigger no requieren `EXECUTE` para los roles, porque PostgreSQL solo lo comprueba cuando se crea el trigger.
+
+**Row Level Security (tablas nuevas del Sprint 3)**
+
+| Tabla | RLS | Políticas |
+|---|---|---|
+| `interactions.user_blocks` | Activado | `user_blocks_app` (`app_runtime`, `FOR ALL`) y `user_blocks_readonly` (`db_readonly`, `FOR SELECT`) |
+| `messaging.conversations` | Activado | `conversations_app` y `conversations_readonly` |
+| `messaging.messages` | Activado | `messages_app` y `messages_readonly` |
+| `notifications.notifications` | Activado | `notifications_app` y `notifications_readonly` |
+
+El backend autentica a sus usuarios con su propio JWT y no con Supabase Auth, por lo que no existe `auth.uid()` para escribir políticas por usuario. RLS se activa como protección por defecto: un rol sin política (por ejemplo `anon` o `authenticated` de Supabase, si estos schemas llegaran a exponerse en la API) no ve ni modifica estas tablas. Las políticas de `app_runtime` y `db_readonly` usan `USING (true)` porque los privilegios concretos de cada rol los siguen limitando los `GRANT`. El propietario de las tablas (usado por Flyway) no se ve afectado por RLS. Las tablas de los Sprints 1 y 2 no tienen RLS activado; se podría extender con el mismo patrón.
 
 **Rol de la aplicación:** la aplicación debe conectarse con una cuenta con login que sea miembro de `app_runtime`. Las migraciones de Flyway necesitan un rol con permisos de administración sobre el esquema, distinto de `app_runtime`.
 
@@ -765,8 +853,8 @@ El script `security.sql` utiliza instrucciones `GRANT` para asignar permisos y `
 ```sql
 -- ============================================================
 -- EAV02 - Fabrica Escuela
--- Sprint 2 | Seguridad y privilegios de la base de datos
--- Alcance: roles y permisos de PostgreSQL
+-- Sprints 2 y 3 | Seguridad y privilegios de la base de datos
+-- Alcance: roles, permisos, EXECUTE sobre funciones y RLS
 -- Ejecutar despues de schema.sql en una base de datos de prueba.
 -- ============================================================
 
@@ -807,12 +895,18 @@ REVOKE ALL ON ALL TABLES IN SCHEMA projects FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA posts FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA interactions FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA moderation FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA messaging FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA notifications FROM PUBLIC;
 
 -- 3. Permitir el uso de los esquemas a los roles autorizados.
 
 GRANT USAGE ON SCHEMA users, authentication, profiles, admin,
     projects, posts, interactions, moderation
 TO db_readonly, app_runtime, app_moderator;
+
+-- Sprint 3: el moderador no necesita acceso a mensajes ni notificaciones.
+GRANT USAGE ON SCHEMA messaging, notifications
+TO db_readonly, app_runtime;
 
 -- 4. Rol de consulta: solo lectura.
 -- No puede ver users.app_users.password_hash (se otorga SELECT solo
@@ -830,6 +924,15 @@ GRANT SELECT ON interactions.comments TO db_readonly;
 GRANT SELECT ON interactions.reactions TO db_readonly;
 GRANT SELECT ON interactions.user_follows TO db_readonly;
 GRANT SELECT ON moderation.reports TO db_readonly;
+
+-- Sprint 3: los mensajes son privados, por lo que se otorga SELECT solo sobre
+-- las columnas que no contienen el texto (sin content).
+
+GRANT SELECT ON interactions.user_blocks TO db_readonly;
+GRANT SELECT ON messaging.conversations TO db_readonly;
+GRANT SELECT (id, conversation_id, sender_id, created_at)
+ON messaging.messages TO db_readonly;
+GRANT SELECT ON notifications.notifications TO db_readonly;
 
 -- 5. Rol de ejecucion de la aplicacion.
 -- Puede operar sobre las tablas funcionales, sin administrar
@@ -862,6 +965,31 @@ ON interactions.reactions TO app_runtime;
 GRANT SELECT, INSERT, DELETE
 ON interactions.user_follows TO app_runtime;
 
+-- Sprint 3. Bloquear y desbloquear crean y eliminan filas, nunca las modifican.
+
+GRANT SELECT, INSERT, DELETE
+ON interactions.user_blocks TO app_runtime;
+
+-- Los mensajes no se editan ni se eliminan. De las conversaciones solo se
+-- actualiza last_message_at (lo hace el trigger T3).
+
+GRANT SELECT, INSERT
+ON messaging.conversations TO app_runtime;
+
+GRANT UPDATE (last_message_at)
+ON messaging.conversations TO app_runtime;
+
+GRANT SELECT, INSERT
+ON messaging.messages TO app_runtime;
+
+-- La aplicación crea las notificaciones y solo puede cambiar read_at.
+
+GRANT SELECT, INSERT
+ON notifications.notifications TO app_runtime;
+
+GRANT UPDATE (read_at)
+ON notifications.notifications TO app_runtime;
+
 -- La aplicacion puede consultar y registrar reportes,
 -- pero no resolverlos ni cambiar su estado con este rol.
 
@@ -893,11 +1021,86 @@ GRANT SELECT ON moderation.reports TO app_moderator;
 GRANT UPDATE (status) ON moderation.reports TO app_moderator;
 
 GRANT SELECT, INSERT ON admin.audit_logs TO app_moderator;
+
+-- 7. Funciones y procedimientos (Sprint 3).
+-- Por defecto PostgreSQL concede EXECUTE a PUBLIC sobre toda función nueva.
+-- Se revoca y se otorga solo a los roles que deben invocarla. Los triggers no
+-- necesitan EXECUTE sobre su función, porque PostgreSQL solo lo comprueba al
+-- crear el trigger.
+
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA admin, interactions, messaging, notifications
+FROM PUBLIC;
+
+REVOKE ALL ON FUNCTION public.fn_set_updated_at() FROM PUBLIC;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA admin, interactions, messaging, notifications
+REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+
+-- La aplicación invoca los procedimientos de las HU-11, HU-12, HU-13 y HU-14.
+GRANT EXECUTE ON FUNCTION
+    interactions.block_user(uuid, uuid),
+    interactions.unblock_user(uuid, uuid),
+    messaging.send_message(uuid, uuid, text),
+    messaging.get_conversation(uuid, uuid, integer),
+    notifications.count_unread(uuid),
+    notifications.mark_notifications_read(uuid),
+    admin.get_growth_stats(date, date, text)
+TO app_runtime;
+
+-- Los triggers T2 y T5 llaman a esta función con los privilegios del rol que
+-- escribe, por lo que app_runtime necesita EXECUTE (la función es
+-- SECURITY DEFINER: comprueba el bloqueo sin dar acceso a user_blocks).
+GRANT EXECUTE ON FUNCTION interactions.fn_users_blocked(uuid, uuid) TO app_runtime;
+
+-- El rol de consulta solo ejecuta las estadísticas (HU-14); no puede enviar
+-- mensajes ni modificar datos mediante procedimientos.
+GRANT EXECUTE ON FUNCTION admin.get_growth_stats(date, date, text) TO db_readonly;
+
+-- 8. Row Level Security en las tablas nuevas (Sprint 3).
+-- El backend autentica a sus usuarios con su propio JWT y no con Supabase Auth,
+-- por lo que no existe auth.uid() para escribir políticas por usuario. RLS se
+-- activa como protección por defecto: sin política, cualquier otro rol (por
+-- ejemplo anon o authenticated de Supabase) no ve ni modifica estas tablas.
+-- El propietario de las tablas (usado por Flyway) no se ve afectado. Los
+-- privilegios concretos de cada rol los siguen limitando los GRANT anteriores.
+
+ALTER TABLE interactions.user_blocks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messaging.conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messaging.messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications.notifications ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS user_blocks_app ON interactions.user_blocks;
+DROP POLICY IF EXISTS user_blocks_readonly ON interactions.user_blocks;
+CREATE POLICY user_blocks_app ON interactions.user_blocks
+    FOR ALL TO app_runtime USING (true) WITH CHECK (true);
+CREATE POLICY user_blocks_readonly ON interactions.user_blocks
+    FOR SELECT TO db_readonly USING (true);
+
+DROP POLICY IF EXISTS conversations_app ON messaging.conversations;
+DROP POLICY IF EXISTS conversations_readonly ON messaging.conversations;
+CREATE POLICY conversations_app ON messaging.conversations
+    FOR ALL TO app_runtime USING (true) WITH CHECK (true);
+CREATE POLICY conversations_readonly ON messaging.conversations
+    FOR SELECT TO db_readonly USING (true);
+
+DROP POLICY IF EXISTS messages_app ON messaging.messages;
+DROP POLICY IF EXISTS messages_readonly ON messaging.messages;
+CREATE POLICY messages_app ON messaging.messages
+    FOR ALL TO app_runtime USING (true) WITH CHECK (true);
+CREATE POLICY messages_readonly ON messaging.messages
+    FOR SELECT TO db_readonly USING (true);
+
+DROP POLICY IF EXISTS notifications_app ON notifications.notifications;
+DROP POLICY IF EXISTS notifications_readonly ON notifications.notifications;
+CREATE POLICY notifications_app ON notifications.notifications
+    FOR ALL TO app_runtime USING (true) WITH CHECK (true);
+CREATE POLICY notifications_readonly ON notifications.notifications
+    FOR SELECT TO db_readonly USING (true);
 ```
 
 </details>
 
-Los permisos se asignan por esquema y tabla. El rol `db_readonly` recibe `SELECT` en nueve tablas y, en `users.app_users`, solo sobre columnas no sensibles. El rol `app_runtime` recibe permisos operativos sobre las tablas funcionales, con restricciones específicas en `moderation.reports`, `admin.audit_logs` e `interactions.user_follows` (sin `UPDATE`). El rol `app_moderator` recibe permisos de consulta sobre el contenido y los reportes, y de actualización solo sobre las columnas de estado, sin permiso de eliminación.
+Los permisos se asignan por esquema y tabla. El rol `db_readonly` recibe `SELECT` en trece tablas y, en `users.app_users` y `messaging.messages`, solo sobre columnas no sensibles. El rol `app_runtime` recibe permisos operativos sobre las tablas funcionales, con restricciones específicas en `moderation.reports`, `admin.audit_logs` e `interactions.user_follows` (sin `UPDATE`). El rol `app_moderator` recibe permisos de consulta sobre el contenido y los reportes, y de actualización solo sobre las columnas de estado, sin permiso de eliminación. En el Sprint 3, `app_runtime` además recibe `EXECUTE` sobre las funciones de las HU.
 
 ### 6.4. Validación de la configuración
 
@@ -912,15 +1115,27 @@ La configuración se probó en una base de datos local mediante consultas a los 
 - Se comprobó que `app_runtime` puede registrar reportes, pero no actualizarlos ni eliminar registros de auditoría.
 - Se verificó que `app_moderator` puede actualizar reportes, pero no eliminarlos.
 
+Pruebas del Sprint 3 (PostgreSQL 16 en Docker, ejecutando cada operación con `SET ROLE` sobre datos de ejemplo):
+
+- `app_runtime` bloquea, desbloquea, envía mensajes, lee historiales, cuenta y marca notificaciones y consulta estadísticas mediante las funciones. No puede modificar columnas de `notifications` distintas de `read_at` (`permission denied`).
+- `db_readonly` ejecuta `admin.get_growth_stats` y lee los metadatos de `messaging.messages`; no puede leer `content`, ejecutar `send_message` ni insertar bloqueos (`permission denied`).
+- `app_moderator` no accede al schema `messaging` ni ejecuta `block_user` (`permission denied`). Sí actualiza `moderation_status` en perfiles: el trigger `fn_set_updated_at` no necesita `EXECUTE`.
+- Un rol con `USAGE` sobre el schema pero sin `EXECUTE` recibe `permission denied for function` (privilegio revocado a `PUBLIC`).
+- Si se revoca `EXECUTE` sobre `fn_users_blocked` a `app_runtime`, el `INSERT` en `user_follows` falla por el trigger T5; con el permiso concedido funciona. El permiso es necesario.
+- Con RLS activado, un rol con `SELECT` pero sin política ve 0 filas de `messaging.conversations`; `app_runtime`, que tiene política, ve la conversación.
+- `security.sql` se ejecutó dos veces seguidas sin errores (es re-ejecutable).
+
 Estas pruebas evidencian que los privilegios principales corresponden al diseño propuesto y que existen restricciones diferenciadas entre los roles.
 
 ### 6.5. Alcance y consideraciones
 
 La configuración validada corresponde a una prueba local de permisos de PostgreSQL. No se ha aplicado a la instancia compartida de Supabase ni se afirma que el backend ya utilice estos roles. La integración deberá coordinarse con el equipo de backend, incluyendo la asignación de una cuenta de conexión autorizada y la revisión de los permisos requeridos por cada operación.
 
+Las funciones de las HU no sustituyen la lógica del backend: son la implementación equivalente en la base de datos. Para que el backend las use, debe invocarlas con `SELECT` y conectarse con una cuenta miembro de `app_runtime`.
+
 Esta estrategia implementa control de acceso mediante roles y privilegios de base de datos; no sustituye los controles de autenticación y autorización que correspondan a la aplicación.
 
-## 7. Consultas SQL de los Sprints 1 y 2
+## 7. Consultas SQL de los Sprints 1, 2 y 3
 
 Cada consulta responde una de las preguntas de negocio clave (sección 2) y se
 ejecuta sobre las tablas creadas por `schema.sql`, en `psql`, pgAdmin o el SQL
@@ -1163,7 +1378,133 @@ GROUP BY moderation_status
 ORDER BY tipo_contenido, moderation_status;
 ```
 
+### Sprint 3
+
+#### Consulta 21 (HU-11). ¿A quiénes ha bloqueado un usuario y desde cuándo?
+
+```sql
+SELECT bloqueado.username AS bloqueado, b.created_at AS bloqueado_desde
+FROM interactions.user_blocks b
+JOIN users.app_users bloqueado ON bloqueado.id = b.blocked_id
+WHERE b.blocker_id = (SELECT id FROM users.app_users WHERE username = 'usuario_demo')
+ORDER BY b.created_at DESC;
+```
+
+#### Consulta 22 (HU-11). ¿Qué usuarios han sido bloqueados por más personas?
+
+```sql
+SELECT u.username, COUNT(*) AS veces_bloqueado
+FROM interactions.user_blocks b
+JOIN users.app_users u ON u.id = b.blocked_id
+GROUP BY u.id, u.username
+ORDER BY veces_bloqueado DESC, u.username
+LIMIT 10;
+```
+
+#### Consulta 23 (HU-11). ¿Existe un bloqueo, en cualquier sentido, entre dos usuarios?
+
+```sql
+SELECT interactions.fn_users_blocked(a.id, b.id) AS hay_bloqueo
+FROM users.app_users a
+CROSS JOIN users.app_users b
+WHERE a.username = 'usuario_demo'
+  AND b.username = 'otro_usuario';
+```
+
+#### Consulta 24 (HU-12). ¿Cuáles son las conversaciones de un usuario, ordenadas por actividad, con el otro participante y el último mensaje?
+
+```sql
+SELECT otro.username AS con_usuario, c.last_message_at, ultimo.content AS ultimo_mensaje
+FROM messaging.conversations c
+JOIN users.app_users yo
+  ON yo.username = 'usuario_demo'
+ AND yo.id IN (c.user_one_id, c.user_two_id)
+JOIN users.app_users otro
+  ON otro.id = CASE WHEN c.user_one_id = yo.id THEN c.user_two_id ELSE c.user_one_id END
+JOIN LATERAL (
+    SELECT m.content
+    FROM messaging.messages m
+    WHERE m.conversation_id = c.id
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT 1
+) ultimo ON true
+ORDER BY c.last_message_at DESC;
+```
+
+#### Consulta 25 (HU-12). ¿Cuál es el historial de mensajes entre dos usuarios, en orden cronológico?
+
+```sql
+SELECT h.created_at, emisor.username AS remitente, h.content
+FROM messaging.get_conversation(
+         (SELECT id FROM users.app_users WHERE username = 'usuario_demo'),
+         (SELECT id FROM users.app_users WHERE username = 'otro_usuario')
+     ) h
+JOIN users.app_users emisor ON emisor.id = h.sender_id
+ORDER BY h.created_at;
+```
+
+#### Consulta 26 (HU-12). ¿Cuántos mensajes ha enviado cada usuario y cuándo envió el último?
+
+```sql
+SELECT u.username, COUNT(m.id) AS mensajes_enviados, MAX(m.created_at) AS ultimo_mensaje
+FROM users.app_users u
+JOIN messaging.messages m ON m.sender_id = u.id
+GROUP BY u.id, u.username
+ORDER BY mensajes_enviados DESC, u.username;
+```
+
+#### Consulta 27 (HU-13). ¿Cuántas notificaciones sin leer tiene cada usuario?
+
+```sql
+SELECT u.username, COUNT(*) AS sin_leer
+FROM notifications.notifications n
+JOIN users.app_users u ON u.id = n.recipient_id
+WHERE n.read_at IS NULL
+GROUP BY u.id, u.username
+ORDER BY sin_leer DESC, u.username;
+```
+
+#### Consulta 28 (HU-13). ¿Cuáles son las notificaciones más recientes de un usuario y quién las originó?
+
+```sql
+SELECT n.created_at, n.type, actor.username AS actor, n.target_type, n.target_label,
+       (n.read_at IS NOT NULL) AS leida
+FROM notifications.notifications n
+JOIN users.app_users actor ON actor.id = n.actor_id
+WHERE n.recipient_id = (SELECT id FROM users.app_users WHERE username = 'usuario_demo')
+ORDER BY n.created_at DESC, n.id DESC
+LIMIT 20;
+```
+
+#### Consulta 29 (HU-13). ¿Qué tipo de notificación genera más actividad y cuántas siguen sin leer?
+
+```sql
+SELECT type, COUNT(*) AS total, COUNT(*) FILTER (WHERE read_at IS NULL) AS sin_leer
+FROM notifications.notifications
+GROUP BY type
+ORDER BY total DESC;
+```
+
+#### Consulta 30 (HU-14). ¿Cuántos usuarios nuevos se registraron por mes en un rango de fechas?
+
+```sql
+SELECT date_trunc('month', created_at)::date AS mes, COUNT(*) AS usuarios_nuevos
+FROM users.app_users
+WHERE created_at >= DATE '2026-01-01'
+  AND created_at < DATE '2026-04-01'
+GROUP BY 1
+ORDER BY 1;
+```
+
+#### Consulta 31 (HU-14). ¿Cuántos usuarios, proyectos, discusiones y comentarios hubo por periodo (semana o mes)?
+
+```sql
+SELECT * FROM admin.get_growth_stats(DATE '2026-01-01', DATE '2026-03-31', 'month');
+```
+
 ## 8. Estimación de volumen
+
+> Nota: esta estimación corresponde a las diez tablas de los Sprints 1 y 2. No se actualizó para las cuatro tablas del Sprint 3 porque la rúbrica de este sprint no la evalúa.
 
 Escenario hipotético de planeación académica, con crecimiento mensual constante. Detalle y fórmula N(t) = N inicial + (G mensual × t) en [`docs/analisis-almacenamiento.md`](./docs/analisis-almacenamiento.md).
 
@@ -1259,6 +1600,101 @@ JOIN messaging.conversations c
 WHERE a.username = 'ana';
 -- ERROR:  No se puede enviar el mensaje: existe un bloqueo entre ... y ...
 ```
+
+## 10. Procedimientos y funciones
+
+Las funciones están definidas al final de [`schema.sql`](./schema.sql), en la sección `PROCEDIMIENTOS Y FUNCIONES ALMACENADAS (Sprint 3)`. Cada una implementa la lógica de una historia de usuario, recibe parámetros explícitos y devuelve un resultado que se obtiene con `SELECT`. Se ejecutan con los privilegios de quien las llama (`SECURITY INVOKER`); los permisos de `EXECUTE` se describen en la [sección 6.3](#63-asignación-de-permisos).
+
+### Resumen
+
+| # | Función | Parámetros | Resultado | Propósito | HU |
+|---|---|---|---|---|---|
+| PR1 | `interactions.block_user` | `p_blocker uuid`, `p_blocked uuid` | `uuid`: id del bloqueo | Bloquea a un usuario. Es idempotente: si el bloqueo ya existe devuelve el mismo id. Rechaza el autobloqueo. | HU-11 |
+| PR2 | `interactions.unblock_user` | `p_blocker uuid`, `p_blocked uuid` | `boolean`: `true` si existía y se eliminó | Desbloquea a un usuario. | HU-11 |
+| PR3 | `messaging.send_message` | `p_sender uuid`, `p_recipient uuid`, `p_content text` | `uuid`: id del mensaje | Crea la conversación del par si no existe y registra el mensaje. | HU-12 |
+| PR4 | `messaging.get_conversation` | `p_user uuid`, `p_other uuid`, `p_limit integer` (50 por defecto) | Tabla: `message_id`, `sender_id`, `content`, `created_at` | Historial de la conversación en orden cronológico (los últimos `p_limit` mensajes). | HU-12 |
+| PR5 | `notifications.count_unread` | `p_user uuid` | `integer` | Cantidad de notificaciones sin leer del usuario. | HU-13 |
+| PR6 | `notifications.mark_notifications_read` | `p_user uuid` | `integer`: cuántas se marcaron | Marca como leídas todas las notificaciones pendientes del usuario. | HU-13 |
+| PR7 | `admin.get_growth_stats` | `p_from date`, `p_to date`, `p_period text` (`'week'` o `'month'`, por defecto `'month'`) | Tabla: `period_start`, `new_users`, `new_projects`, `new_discussions`, `new_comments` | Estadísticas de crecimiento y actividad por periodo, con 0 en los periodos sin actividad. | HU-14 |
+
+### Detalle y ejemplo de llamada
+
+En los ejemplos, `ana` y `beto` son usuarios existentes de `users.app_users`.
+
+**PR1 y PR2 · Bloquear y desbloquear (HU-11).** La HU pide que, al bloquear, el usuario bloqueado no pueda enviar mensajes ni seguir. PR1 solo registra el bloqueo; el trigger T4 elimina los seguimientos y los triggers T2 y T5 impiden mensajes y seguimientos nuevos. PR2 elimina el bloqueo, tras lo cual se puede volver a interactuar.
+
+```sql
+-- beto bloquea a ana. Resultado: uuid del bloqueo (el mismo si se repite)
+SELECT interactions.block_user(
+    (SELECT id FROM users.app_users WHERE username = 'beto'),
+    (SELECT id FROM users.app_users WHERE username = 'ana'));
+
+-- beto desbloquea a ana. Resultado: true (false si no había bloqueo)
+SELECT interactions.unblock_user(
+    (SELECT id FROM users.app_users WHERE username = 'beto'),
+    (SELECT id FROM users.app_users WHERE username = 'ana'));
+```
+
+**PR3 · Enviar mensaje (HU-12).** Calcula el par ordenado con `LEAST` y `GREATEST` (así `(A, B)` y `(B, A)` son la misma conversación), crea la conversación con `ON CONFLICT DO NOTHING` y registra el mensaje. Si hay un bloqueo entre los dos usuarios, el trigger T2 aborta la operación con el mensaje "No se puede enviar el mensaje: existe un bloqueo ...", y la conversación creada en la misma llamada se deshace.
+
+```sql
+-- ana le escribe a beto. Resultado: uuid del mensaje
+SELECT messaging.send_message(
+    (SELECT id FROM users.app_users WHERE username = 'ana'),
+    (SELECT id FROM users.app_users WHERE username = 'beto'),
+    'Hola, ¿colaboramos en el proyecto?');
+```
+
+**PR4 · Historial (HU-12).** Devuelve los últimos `p_limit` mensajes de la conversación entre los dos usuarios, del más antiguo al más reciente. El orden de los parámetros no importa.
+
+```sql
+SELECT message_id, sender_id, content, created_at
+FROM messaging.get_conversation(
+    (SELECT id FROM users.app_users WHERE username = 'ana'),
+    (SELECT id FROM users.app_users WHERE username = 'beto'),
+    20);
+```
+
+**PR5 y PR6 · Notificaciones (HU-13).** PR5 alimenta el contador de no leídas y PR6 implementa "marcar como leídas al abrir el panel": después de PR6, PR5 devuelve 0. Ninguna crea notificaciones, porque el backend ya las crea (`NotificationService`) y hacerlo también en la base de datos las duplicaría.
+
+```sql
+-- Contador de no leídas de ana. Resultado: integer
+SELECT notifications.count_unread((SELECT id FROM users.app_users WHERE username = 'ana'));
+
+-- Marcar todas como leídas. Resultado: cuántas se marcaron
+SELECT notifications.mark_notifications_read((SELECT id FROM users.app_users WHERE username = 'ana'));
+```
+
+**PR7 · Estadísticas (HU-14).** Genera un periodo por semana (lunes) o por mes dentro del rango, cuenta por separado usuarios, proyectos, discusiones técnicas (`posts.type = 'TECHNICAL_DISCUSSION'`) y comentarios, y devuelve 0 en los periodos sin actividad para que las gráficas no tengan huecos. Solo cuenta lo creado dentro del rango (ambos extremos incluidos). Rechaza periodos distintos de `week` y `month`, y rangos invertidos.
+
+```sql
+SELECT * FROM admin.get_growth_stats(DATE '2026-01-01', DATE '2026-03-31', 'month');
+```
+
+### Compatibilidad con el backend
+
+Las funciones no reemplazan al backend ni se ejecutan solas: son la implementación equivalente de las HU en la base de datos, útil para scripts, el SQL Editor de Supabase u otros servicios. Mantienen las mismas reglas que el backend: el bloqueo se aplica en ambos sentidos, los mensajes no se pueden enviar a uno mismo, las notificaciones las sigue creando la aplicación y las funciones solo las cuentan y marcan.
+
+### Pruebas
+
+Se ejecutaron sobre PostgreSQL 16 en Docker, después de `schema.sql` y `security.sql`, con tres usuarios de ejemplo y con el rol `app_runtime` (`SET ROLE`):
+
+| Función | Caso | Resultado |
+|---|---|---|
+| PR1 | `beto` bloquea a `ana` | Devuelve el id del bloqueo; T4 elimina los seguimientos entre ambos y conserva `ana → cami` |
+| PR1 | Repetir el bloqueo | Devuelve el mismo id (idempotente) |
+| PR1 | Un usuario se bloquea a sí mismo | Error: "Un usuario no puede bloquearse a sí mismo" |
+| PR3 | `ana` escribe a `beto` con el bloqueo activo | Rechazado por T2 |
+| PR3 | `beto` (quien bloqueó) escribe a `ana` | Rechazado por T2 (el bloqueo aplica en ambos sentidos) |
+| PR1 y T5 | `ana` intenta seguir a `beto` con el bloqueo activo | Rechazado por T5 |
+| PR2 | Desbloquear dos veces seguidas | `true` y luego `false` |
+| PR3 | `ana` escribe a `beto`; `beto` responde | Una sola conversación; `last_message_at` igual a la fecha del último mensaje (T3) |
+| PR3 | Mensaje a uno mismo, mensaje en blanco, destinatario inexistente | Error por validación, por `CHECK` y por clave foránea |
+| PR4 | Historial de `ana` y `beto`; historial de `beto` y `ana` con límite 1 | Dos mensajes en orden cronológico; solo el último |
+| PR5 y PR6 | La aplicación inserta 2 notificaciones para `cami` | `count_unread` = 2; `mark_notifications_read` = 2; `count_unread` = 0; una segunda llamada devuelve 0 |
+| PR7 | Rango enero a marzo de 2026, por mes | Enero: 2 usuarios; febrero: 1 usuario, 1 proyecto, 1 discusión; marzo: 2 comentarios |
+| PR7 | Febrero de 2026, por semana | Cinco semanas (26 de enero al 23 de febrero), con 0 en las semanas sin actividad |
+| PR7 | Periodo `day` y rango invertido | Error: "Periodo no válido" y "Rango de fechas no válido" |
 
 ## INTEGRANTES:
 
